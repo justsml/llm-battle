@@ -1,6 +1,6 @@
 {
-  "name": "llm-build-off",
-  "version": "0.1.0",
+  "name": "llm-battle",
+  "version": "0.2.0",
   "private": true,
   "packageManager": "pnpm@10.25.0",
   "scripts": {

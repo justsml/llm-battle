@@ -1,13 +1,13 @@
 import type { CompareModel, GatewayModel } from "@/lib/types";
 
 export const DEFAULT_PROMPT =
-  "You are evaluating a UI screenshot for a frontend build challenge. Describe the layout, typography, spacing, color palette, interaction details, and the implementation strategy a strong engineer should follow to recreate it in React and Tailwind. Be concrete and concise.";
+  "You are given a UI screenshot and must recreate it as a single self-contained HTML artifact for realtime preview. Return only runnable HTML starting with <!DOCTYPE html> and ending with </html> with no markdown fences or commentary. Use semantic HTML, inline <style>, and optional inline <script>. Do not rely on external assets, frameworks, CDNs, or network requests. Match the screenshot's layout, spacing, hierarchy, typography, colors, borders, and interactions as closely as possible. Prefer stable, progressively renderable markup so partial streaming still paints useful UI early. If some details are unclear, make tasteful product-quality decisions and keep the result polished and responsive.";
 
 export const DEFAULT_MODELS: CompareModel[] = [
-  { id: "openai/gpt-4.1", label: "GPT-4.1" },
-  { id: "anthropic/claude-3.7-sonnet", label: "Claude 3.7 Sonnet" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { id: "xai/grok-3", label: "Grok 3 Beta" },
+  { id: "openai/gpt-5.4", label: "GPT-5.4" },
+  { id: "anthropic/claude-4.6-sonnet", label: "Claude 4.6 Sonnet" },
+  { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
+  { id: "alibaba/qwen3-vl-instruct", label: "Qwen 3 VL Instruct" },
 ];
 
 export function isVisionCapableModel(model: Pick<GatewayModel, "type" | "tags">) {

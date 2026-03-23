@@ -26,6 +26,11 @@ export type GatewayModel = {
   ownedBy: string;
   type: string;
   tags: string[];
+  createdAt?: string;
+  releasedAt?: string;
+  description?: string;
+  contextWindow?: number;
+  maxTokens?: number;
   supportsImageInput: boolean;
   pricing: GatewayModelPricing;
 };

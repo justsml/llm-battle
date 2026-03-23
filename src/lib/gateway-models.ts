@@ -21,7 +21,12 @@ type GatewayPricingPayload = {
 type GatewayModelPayload = {
   id?: string;
   name?: string;
+  description?: string;
   owned_by?: string;
+  created?: number;
+  released?: number;
+  context_window?: number;
+  max_tokens?: number;
   type?: string;
   tags?: string[];
   pricing?: GatewayPricingPayload;
@@ -75,6 +80,11 @@ function normalizeModel(model: GatewayModelPayload): GatewayModel | null {
     id: model.id,
     name: model.name?.trim() || model.id,
     ownedBy: model.owned_by?.trim() || "unknown",
+    createdAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
+    releasedAt: model.released ? new Date(model.released * 1000).toISOString() : undefined,
+    description: model.description?.trim() || undefined,
+    contextWindow: model.context_window,
+    maxTokens: model.max_tokens,
     type,
     tags,
     supportsImageInput: isVisionCapableModel({ type, tags }),

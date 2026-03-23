@@ -8,18 +8,27 @@ import type { CompareModel, GatewayModel, ModelResult, SavedRun } from "@/lib/ty
 import { cn } from "@/lib/utils";
 
 const MAX_RUNS = 20;
+const LOCAL_DRAFT_KEY = "build-off:draft:v1";
+const MIN_MODEL_CARDS = 2;
+const MAX_MODEL_CARDS = 12;
+
+type OutputMode = "preview" | "raw";
 
 function getRunImageSrc(run: SavedRun) {
   return run.imageDataUrl || run.imageUrl || "";
 }
 
-function createEmptyResults(models: CompareModel[]): ModelResult[] {
-  return models.map((model) => ({
+function createEmptyResult(model: CompareModel): ModelResult {
+  return {
     modelId: model.id,
     label: model.label,
     text: "",
     status: "idle",
-  }));
+  };
+}
+
+function createEmptyResults(models: CompareModel[]): ModelResult[] {
+  return models.map(createEmptyResult);
 }
 
 function uid() {
@@ -47,6 +56,14 @@ function formatTimestamp(value: string) {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatMonthYear(value?: string) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    year: "numeric",
   }).format(new Date(value));
 }
 
@@ -79,8 +96,109 @@ function groupModelsByProvider(models: GatewayModel[]) {
   }, {});
 }
 
-function findFirstAvailableModel(catalog: GatewayModel[], selectedIds: string[]) {
-  return catalog.find((model) => model.supportsImageInput && !selectedIds.includes(model.id)) ?? null;
+function getVisionModels(catalog: GatewayModel[]) {
+  return catalog.filter((model) => model.supportsImageInput);
+}
+
+function getMaxSelectableModelCards(catalog: GatewayModel[]) {
+  if (!catalog.length) return MAX_MODEL_CARDS;
+  return Math.min(MAX_MODEL_CARDS, getVisionModels(catalog).length);
+}
+
+function getMinSelectableModelCards(catalog: GatewayModel[]) {
+  if (!catalog.length) return MIN_MODEL_CARDS;
+  return Math.min(MIN_MODEL_CARDS, Math.max(1, getMaxSelectableModelCards(catalog)));
+}
+
+function getNextAvailableModels(catalog: GatewayModel[], selectedIds: string[], count: number) {
+  if (count <= 0) return [];
+
+  const usedIds = new Set(selectedIds);
+  const nextModels: GatewayModel[] = [];
+
+  for (const model of getVisionModels(catalog)) {
+    if (usedIds.has(model.id)) continue;
+    nextModels.push(model);
+    usedIds.add(model.id);
+
+    if (nextModels.length >= count) {
+      break;
+    }
+  }
+
+  return nextModels;
+}
+
+function looksLikeHtmlDocument(value: string) {
+  return /<!doctype html|<html[\s>]|<body[\s>]|<head[\s>]/i.test(value);
+}
+
+function looksLikeHtml(value: string) {
+  return /<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(value);
+}
+
+function createPreviewSrcDoc(markup: string, previewId: string) {
+  const previewBridge = `
+<script>
+(() => {
+  const previewId = ${JSON.stringify(previewId)};
+  const send = (kind, message) => {
+    try {
+      window.parent.postMessage(
+        {
+          source: "build-off-preview",
+          previewId,
+          kind,
+          message: typeof message === "string" ? message : String(message ?? ""),
+        },
+        "*",
+      );
+    } catch {}
+  };
+
+  send("clear", "");
+
+  window.addEventListener("error", (event) => {
+    send("error", event.message || "Runtime error while rendering preview.");
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    send(
+      "error",
+      reason instanceof Error
+        ? reason.message
+        : typeof reason === "string"
+          ? reason
+          : "Unhandled promise rejection while rendering preview.",
+    );
+  });
+})();
+</script>`;
+
+  const previewBase = `
+<style>
+  :root { color-scheme: light; }
+  html, body { margin: 0; min-height: 100%; background: white; }
+</style>`;
+
+  if (!looksLikeHtmlDocument(markup)) {
+    return `<!DOCTYPE html><html><head>${previewBase}${previewBridge}</head><body>${markup}</body></html>`;
+  }
+
+  if (/<head[\s>]/i.test(markup)) {
+    return markup.replace(/<head([^>]*)>/i, `<head$1>${previewBase}${previewBridge}`);
+  }
+
+  if (/<html[\s>]/i.test(markup)) {
+    return markup.replace(/<html([^>]*)>/i, `<html$1><head>${previewBase}${previewBridge}</head>`);
+  }
+
+  if (/<body[\s>]/i.test(markup)) {
+    return markup.replace(/<body([^>]*)>/i, `<body$1>${previewBridge}`);
+  }
+
+  return `<!DOCTYPE html><html><head>${previewBase}${previewBridge}</head><body>${markup}</body></html>`;
 }
 
 function formatDuration(ms?: number) {
@@ -91,6 +209,20 @@ function formatDuration(ms?: number) {
 
 function formatTokenCount(value?: number) {
   if (value == null) return "—";
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatCompactTokenCount(value?: number) {
+  if (value == null) return "—";
+
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`;
+  }
+
   return new Intl.NumberFormat().format(value);
 }
 
@@ -106,6 +238,172 @@ function formatCost(value?: number) {
   }).format(value);
 }
 
+function formatRatePerMillion(value?: number) {
+  if (value == null) return "—";
+
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value * 1_000_000 >= 1 ? 2 : 4,
+    maximumFractionDigits: value * 1_000_000 >= 1 ? 2 : 4,
+  }).format(value * 1_000_000);
+}
+
+function modelMatchesQuery(model: GatewayModel, query: string) {
+  if (!query.trim()) return true;
+
+  const haystack = [
+    model.name,
+    model.id,
+    model.ownedBy,
+    model.type,
+    model.description,
+    ...model.tags,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(query.trim().toLowerCase());
+}
+
+type ModelPickerProps = {
+  index: number;
+  value: CompareModel;
+  catalog: GatewayModel[];
+  disabled: boolean;
+  selectedModels: CompareModel[];
+  onSelect: (modelId: string) => void;
+};
+
+function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect }: ModelPickerProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const selectedCatalogModel = catalog.find((model) => model.id === value.id) ?? null;
+  const filteredModels = catalog.filter((model) => modelMatchesQuery(model, query));
+  const filteredGroups = groupModelsByProvider(filteredModels);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    searchRef.current?.focus();
+  }, [isOpen]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setQuery("");
+        setIsOpen(false);
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setQuery("");
+        setIsOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        className="w-full rounded-[1rem] border border-[var(--line)] bg-[var(--panel)] px-3 py-3 text-left transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={disabled}
+        onClick={() =>
+          setIsOpen((current) => {
+            const next = !current;
+            if (!next) setQuery("");
+            return next;
+          })
+        }
+        type="button"
+      >
+        <span className="block text-sm font-medium">{selectedCatalogModel?.name ?? value.label}</span>
+        <span className="mt-1 block truncate text-xs text-[var(--muted)]">
+          {selectedCatalogModel?.ownedBy ?? "Unknown provider"} · {value.id}
+        </span>
+      </button>
+
+      {isOpen ? (
+        <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--panel)_94%,white)] shadow-[0_20px_60px_color-mix(in_oklch,var(--foreground)_15%,transparent)] backdrop-blur-xl">
+          <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[color:color-mix(in_oklch,var(--panel)_96%,white)] p-3">
+            <input
+              ref={searchRef}
+              className="w-full rounded-[0.9rem] border border-[var(--line)] bg-white/90 px-3 py-2 text-sm outline-none transition focus:border-[var(--foreground)]"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Filter by name, provider, id, or tag"
+              value={query}
+            />
+          </div>
+
+          <div className="max-h-80 overflow-y-auto p-2">
+            {Object.keys(filteredGroups).length ? (
+              Object.entries(filteredGroups).map(([provider, models]) => (
+                <div className="mb-2 last:mb-0" key={provider}>
+                  <p className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
+                    {provider}
+                  </p>
+                  <div className="space-y-1">
+                    {models.map((entry) => {
+                      const isSelectedElsewhere = selectedModels.some(
+                        (selectedModel, selectedIndex) =>
+                          selectedIndex !== index && selectedModel.id === entry.id,
+                      );
+                      const isDisabled = !entry.supportsImageInput || isSelectedElsewhere;
+
+                      return (
+                        <button
+                          className={cn(
+                            "w-full rounded-[1rem] border px-3 py-2 text-left transition",
+                            entry.id === value.id
+                              ? "border-[var(--foreground)] bg-white"
+                              : "border-[var(--line)] bg-white/55 hover:bg-white",
+                            isDisabled && "cursor-not-allowed opacity-50",
+                          )}
+                          disabled={isDisabled}
+                          key={entry.id}
+                          onClick={() => {
+                            onSelect(entry.id);
+                            setQuery("");
+                            setIsOpen(false);
+                          }}
+                          type="button"
+                        >
+                          <span className="block text-sm font-medium">{entry.name}</span>
+                          <span className="mt-1 block text-xs text-[var(--muted)]">
+                            {entry.id}
+                            {!entry.supportsImageInput ? " · no image input" : ""}
+                            {isSelectedElsewhere ? " · already selected" : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="px-3 py-8 text-center text-sm text-[var(--muted)]">
+                No models matched that filter.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function BuildOffClient() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [imageDataUrl, setImageDataUrl] = useState("");
@@ -119,7 +417,46 @@ export function BuildOffClient() {
   const [modelsError, setModelsError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
+  const [outputMode, setOutputMode] = useState<OutputMode>("preview");
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const restoredDraftRef = useRef(false);
+  const pendingDraftModelIdsRef = useRef<string[] | null>(null);
+
+  useEffect(() => {
+    try {
+      const rawDraft = window.localStorage.getItem(LOCAL_DRAFT_KEY);
+      if (!rawDraft) return;
+
+      const draft = JSON.parse(rawDraft) as {
+        prompt?: string;
+        imageDataUrl?: string;
+        imageName?: string;
+        selectedModelIds?: string[];
+      };
+
+      if (typeof draft.prompt === "string") {
+        setPrompt(draft.prompt);
+        restoredDraftRef.current = true;
+      }
+
+      if (typeof draft.imageDataUrl === "string" && draft.imageDataUrl) {
+        setImageDataUrl(draft.imageDataUrl);
+        restoredDraftRef.current = true;
+      }
+
+      if (typeof draft.imageName === "string" && draft.imageName) {
+        setImageName(draft.imageName);
+      }
+
+      if (Array.isArray(draft.selectedModelIds) && draft.selectedModelIds.length) {
+        pendingDraftModelIdsRef.current = draft.selectedModelIds;
+        restoredDraftRef.current = true;
+      }
+    } catch {
+      // Ignore malformed local draft state.
+    }
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -133,13 +470,15 @@ export function BuildOffClient() {
         if (serverRuns.length) {
           setRuns(serverRuns);
 
-          const first = serverRuns[0];
-          setActiveRunId(first.id);
-          setPrompt(first.prompt);
-          setImageDataUrl(getRunImageSrc(first));
-          setImageName(first.imageName);
-          setSelectedModels(first.models);
-          setResults(first.results);
+          if (!restoredDraftRef.current) {
+            const first = serverRuns[0];
+            setActiveRunId(first.id);
+            setPrompt(first.prompt);
+            setImageDataUrl(getRunImageSrc(first));
+            setImageName(first.imageName);
+            setSelectedModels(first.models);
+            setResults(first.results);
+          }
         }
       } catch {
         // Server history unavailable — start fresh
@@ -159,13 +498,29 @@ export function BuildOffClient() {
         const nextCatalog = payload.models ?? [];
 
         setCatalog(nextCatalog);
-        setSelectedModels((current) => syncModelLabels(current, nextCatalog));
-        setResults((current) =>
-          current.map((result) => {
-            const match = nextCatalog.find((model) => model.id === result.modelId);
-            return match ? { ...result, label: match.name } : result;
-          }),
-        );
+        const selectedFromDraft =
+          pendingDraftModelIdsRef.current
+            ?.map((modelId) => nextCatalog.find((model) => model.id === modelId))
+            .filter((model): model is GatewayModel => model != null && model.supportsImageInput)
+            .filter(
+              (model, index, models) => models.findIndex((entry) => entry.id === model.id) === index,
+            ) ?? [];
+
+        if (selectedFromDraft.length) {
+          const nextModels = selectedFromDraft.map(toCompareModel);
+          setActiveRunId(null);
+          setSelectedModels(nextModels);
+          setResults(createEmptyResults(nextModels));
+        } else {
+          setSelectedModels((current) => syncModelLabels(current, nextCatalog));
+          setResults((current) =>
+            current.map((result) => {
+              const match = nextCatalog.find((model) => model.id === result.modelId);
+              return match ? { ...result, label: match.name } : result;
+            }),
+          );
+        }
+
         setRuns((current) =>
           current.map((run) => ({
             ...run,
@@ -176,6 +531,7 @@ export function BuildOffClient() {
             }),
           })),
         );
+        pendingDraftModelIdsRef.current = null;
         setModelsError("");
       } catch (error) {
         setModelsError(
@@ -187,7 +543,90 @@ export function BuildOffClient() {
     })();
   }, []);
 
-  // Runs are persisted server-side in Neon — no localStorage sync needed.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        LOCAL_DRAFT_KEY,
+        JSON.stringify({
+          prompt,
+          imageDataUrl,
+          imageName,
+          selectedModelIds: selectedModels.map((model) => model.id),
+        }),
+      );
+    } catch {
+      // Ignore unavailable localStorage.
+    }
+  }, [imageDataUrl, imageName, prompt, selectedModels]);
+
+  useEffect(() => {
+    function handlePreviewMessage(event: MessageEvent) {
+      const data = event.data;
+      if (
+        !data ||
+        typeof data !== "object" ||
+        data.source !== "build-off-preview" ||
+        typeof data.previewId !== "string" ||
+        typeof data.kind !== "string"
+      ) {
+        return;
+      }
+
+      if (data.kind === "clear") {
+        setPreviewErrors((current) => {
+          if (!(data.previewId in current)) return current;
+
+          const next = { ...current };
+          delete next[data.previewId];
+          return next;
+        });
+        return;
+      }
+
+      if (data.kind === "error" && typeof data.message === "string" && data.message.trim()) {
+        setPreviewErrors((current) => {
+          const existing = current[data.previewId] ?? [];
+          if (existing.includes(data.message)) return current;
+
+          return {
+            ...current,
+            [data.previewId]: [...existing, data.message],
+          };
+        });
+      }
+    }
+
+    window.addEventListener("message", handlePreviewMessage);
+    return () => window.removeEventListener("message", handlePreviewMessage);
+  }, []);
+
+  useEffect(() => {
+    if (!catalog.length) return;
+
+    const minCards = getMinSelectableModelCards(catalog);
+    const maxCards = getMaxSelectableModelCards(catalog);
+
+    if (selectedModels.length >= minCards && selectedModels.length <= maxCards) {
+      return;
+    }
+
+    if (selectedModels.length > maxCards) {
+      setSelectedModels((current) => current.slice(0, maxCards));
+      setResults((current) => current.slice(0, maxCards));
+      return;
+    }
+
+    const additions = getNextAvailableModels(
+      catalog,
+      selectedModels.map((model) => model.id),
+      minCards - selectedModels.length,
+    ).map(toCompareModel);
+
+    if (!additions.length) return;
+
+    setSelectedModels((current) => [...current, ...additions]);
+    setResults((current) => [...current, ...additions.map(createEmptyResult)]);
+  }, [catalog, selectedModels]);
 
   useEffect(() => {
     const onPaste = async (event: ClipboardEvent) => {
@@ -307,6 +746,7 @@ export function BuildOffClient() {
     setImageName(run.imageName);
     setSelectedModels(run.models);
     setResults(run.results);
+    setPreviewErrors({});
     setErrorMessage("");
   }
 
@@ -323,10 +763,7 @@ export function BuildOffClient() {
       current.map((result, currentIndex) =>
         currentIndex === index
           ? {
-              modelId: nextModel.id,
-              label: nextModel.name,
-              text: "",
-              status: "idle",
+              ...createEmptyResult(toCompareModel(nextModel)),
               usage: undefined,
               costs: undefined,
             }
@@ -336,31 +773,34 @@ export function BuildOffClient() {
     setErrorMessage("");
   }
 
-  function handleAddPanel() {
-    const nextModel = findFirstAvailableModel(
-      catalog,
-      selectedModels.map((model) => model.id),
-    );
+  function handleTargetPanelCount(nextCount: number) {
+    const minCards = getMinSelectableModelCards(catalog);
+    const maxCards = getMaxSelectableModelCards(catalog);
+    const clampedCount = Math.max(minCards, Math.min(maxCards, nextCount));
 
-    if (!nextModel) return;
+    if (clampedCount === selectedModels.length) return;
 
-    setSelectedModels((current) => [...current, toCompareModel(nextModel)]);
-    setResults((current) => [
-      ...current,
-      {
-        modelId: nextModel.id,
-        label: nextModel.name,
-        text: "",
-        status: "idle",
-        usage: undefined,
-        costs: undefined,
-      },
-    ]);
+    if (clampedCount > selectedModels.length) {
+      const additions = getNextAvailableModels(
+        catalog,
+        selectedModels.map((model) => model.id),
+        clampedCount - selectedModels.length,
+      ).map(toCompareModel);
+
+      if (!additions.length) return;
+
+      setSelectedModels((current) => [...current, ...additions]);
+      setResults((current) => [...current, ...additions.map(createEmptyResult)]);
+    } else {
+      setSelectedModels((current) => current.slice(0, clampedCount));
+      setResults((current) => current.slice(0, clampedCount));
+    }
+
     setErrorMessage("");
   }
 
   function handleRemovePanel(index: number) {
-    if (selectedModels.length <= 1) return;
+    if (selectedModels.length <= getMinSelectableModelCards(catalog)) return;
 
     setSelectedModels((current) => current.filter((_, currentIndex) => currentIndex !== index));
     setResults((current) => current.filter((_, currentIndex) => currentIndex !== index));
@@ -373,8 +813,11 @@ export function BuildOffClient() {
       return;
     }
 
-    if (!selectedModels.length) {
-      setErrorMessage("Choose at least one model.");
+    const minCards = getMinSelectableModelCards(catalog);
+    const maxCards = getMaxSelectableModelCards(catalog);
+
+    if (selectedModels.length < minCards || selectedModels.length > maxCards) {
+      setErrorMessage(`Choose between ${minCards} and ${maxCards} models.`);
       return;
     }
 
@@ -404,6 +847,7 @@ export function BuildOffClient() {
 
     setActiveRunId(runId);
     setResults(baseResults);
+    setPreviewErrors({});
     setErrorMessage("");
     setIsRunning(true);
     persistRun(run);
@@ -474,33 +918,20 @@ export function BuildOffClient() {
   }
 
   const activeRun = runs.find((run) => run.id === activeRunId) ?? null;
-  const providerGroups = groupModelsByProvider(catalog);
-  const availablePanelCount = catalog.filter((model) => model.supportsImageInput).length;
-  const canAddPanel = !isLoadingModels && selectedModels.length < availablePanelCount;
+  const maxSelectableCards = getMaxSelectableModelCards(catalog);
+  const minSelectableCards = getMinSelectableModelCards(catalog);
+  const canAddPanel = !isLoadingModels && selectedModels.length < maxSelectableCards;
+  const canRemovePanel = selectedModels.length > minSelectableCards;
 
   return (
     <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
       <div className="grain" />
 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
-        <header className="panel rise-in rounded-[2rem] px-5 py-5 sm:px-7 sm:py-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-4xl">
-              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
-                Visual Eval Harness
-              </p>
-              <h1 className="max-w-5xl text-balance text-4xl font-semibold tracking-[-0.06em] sm:text-5xl lg:text-7xl">
-                Compare how frontier models interpret the same screenshot.
-              </h1>
-            </div>
-
-            <div className="max-w-sm rounded-[1.5rem] border border-[var(--line)] bg-white/70 px-4 py-4 backdrop-blur-sm">
-              <p className="font-serif text-lg italic text-[var(--muted)]">
-                Paste an image, stream multiple outputs side by side, and keep the strongest runs in
-                local memory.
-              </p>
-            </div>
-          </div>
+        <header className="rise-in flex items-center rounded-[2rem] border border-white/40 bg-white/30 px-5 py-4 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+            Visual Eval Harness
+          </p>
         </header>
 
         <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
@@ -621,8 +1052,8 @@ export function BuildOffClient() {
                 ))
               ) : (
                 <div className="rounded-[1.5rem] border border-dashed border-[var(--line)] px-5 py-8 text-sm leading-6 text-[var(--muted)]">
-                  Your completed comparisons land here automatically. Each run keeps the screenshot,
-                  prompt, and per-model output in localStorage.
+                  Your completed comparisons land here automatically. The in-progress draft and lineup
+                  also stick across refreshes on this device.
                 </div>
               )}
             </div>
@@ -657,23 +1088,37 @@ export function BuildOffClient() {
             </div>
 
             <div className="flex items-center gap-3">
+              <div className="flex items-center overflow-hidden rounded-full border border-[var(--line)] bg-white/65">
+                <button
+                  className="px-3 py-2 text-sm font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={!canRemovePanel || isRunning}
+                  onClick={() => handleTargetPanelCount(selectedModels.length - 1)}
+                  type="button"
+                >
+                  -
+                </button>
+                <span className="min-w-24 px-3 text-center text-sm font-medium text-[var(--muted)]">
+                  {selectedModels.length} cards
+                </span>
+                <button
+                  className="px-3 py-2 text-sm font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={!canAddPanel || isRunning}
+                  onClick={() => handleTargetPanelCount(selectedModels.length + 1)}
+                  type="button"
+                >
+                  +
+                </button>
+              </div>
+
               <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
-                {selectedModels.length} active
+                2-12 target
               </span>
-              <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={!canAddPanel}
-                onClick={handleAddPanel}
-                type="button"
-              >
-                Add panel
-              </button>
             </div>
           </div>
 
           <div className="mb-4 rounded-[1.4rem] border border-[var(--line)] bg-white/55 px-4 py-3 text-sm leading-6 text-[var(--muted)]">
             The dropdown lists the full Vercel AI Gateway catalog. Only vision-capable language
-            models are selectable for screenshot comparisons.
+            models are selectable for screenshot comparisons, and the lineup supports 2-12 live cards.
           </div>
 
           {modelsError ? (
@@ -683,63 +1128,90 @@ export function BuildOffClient() {
           ) : null}
 
           <div className="grid gap-3 lg:grid-cols-2">
-            {selectedModels.map((model, index) => (
-              <div
-                key={`${model.id}-${index}`}
-                className="rounded-[1.5rem] border border-[var(--line)] bg-white/65 p-4"
-              >
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
-                      Panel {index + 1}
-                    </p>
-                    <p className="mt-1 text-sm text-[var(--muted)]">{model.id}</p>
+            {selectedModels.map((model, index) => {
+              const selectedCatalogModel = catalog.find((entry) => entry.id === model.id) ?? null;
+
+              return (
+                <div
+                  key={`${model.id}-${index}`}
+                  className="rounded-[1.5rem] border border-[var(--line)] bg-white/65 p-4"
+                >
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
+                        Panel {index + 1}
+                      </p>
+                      <p className="mt-1 text-sm text-[var(--muted)]">{model.id}</p>
+                    </div>
+
+                    <button
+                      className="rounded-full border border-[var(--line)] px-3 py-1.5 text-xs font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                      disabled={!canRemovePanel || isRunning}
+                      onClick={() => handleRemovePanel(index)}
+                      type="button"
+                    >
+                      Remove
+                    </button>
                   </div>
 
-                  <button
-                    className="rounded-full border border-[var(--line)] px-3 py-1.5 text-xs font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
-                    disabled={selectedModels.length <= 1 || isRunning}
-                    onClick={() => handleRemovePanel(index)}
-                    type="button"
-                  >
-                    Remove
-                  </button>
-                </div>
+                  <label className="block">
+                    <span className="mb-2 block text-sm font-medium">Model</span>
+                    <ModelPicker
+                      catalog={catalog}
+                      disabled={isLoadingModels || isRunning}
+                      index={index}
+                      onSelect={(modelId) => handleModelChange(index, modelId)}
+                      selectedModels={selectedModels}
+                      value={model}
+                    />
+                  </label>
 
-                <label className="block">
-                  <span className="mb-2 block text-sm font-medium">Model</span>
-                  <select
-                    className="w-full rounded-[1rem] border border-[var(--line)] bg-[var(--panel)] px-3 py-3 text-sm outline-none transition focus:border-[var(--foreground)]"
-                    disabled={isLoadingModels || isRunning}
-                    onChange={(event) => handleModelChange(index, event.target.value)}
-                    value={model.id}
-                  >
-                    {Object.entries(providerGroups).map(([provider, models]) => (
-                      <optgroup key={provider} label={provider}>
-                        {models.map((entry) => {
-                          const isSelectedElsewhere = selectedModels.some(
-                            (selectedModel, selectedIndex) =>
-                              selectedIndex !== index && selectedModel.id === entry.id,
-                          );
+                  {selectedCatalogModel ? (
+                    <div className="mt-3 rounded-[1.1rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_28%,white)] p-3">
+                      <div className="flex flex-wrap gap-2 text-xs text-[var(--muted)]">
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          {selectedCatalogModel.ownedBy}
+                        </span>
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          released {formatMonthYear(selectedCatalogModel.releasedAt)}
+                        </span>
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          context {formatCompactTokenCount(selectedCatalogModel.contextWindow)}
+                        </span>
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          max out {formatCompactTokenCount(selectedCatalogModel.maxTokens)}
+                        </span>
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          in {formatRatePerMillion(selectedCatalogModel.pricing.input)}/1M
+                        </span>
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          out {formatRatePerMillion(selectedCatalogModel.pricing.output)}/1M
+                        </span>
+                      </div>
 
-                          return (
-                            <option
-                              key={entry.id}
-                              disabled={!entry.supportsImageInput || isSelectedElsewhere}
-                              value={entry.id}
+                      {selectedCatalogModel.description ? (
+                        <p className="mt-3 line-clamp-3 text-sm leading-6 text-[color:color-mix(in_oklch,var(--foreground)_82%,black)]">
+                          {selectedCatalogModel.description}
+                        </p>
+                      ) : null}
+
+                      {selectedCatalogModel.tags.length ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {selectedCatalogModel.tags.slice(0, 6).map((tag) => (
+                            <span
+                              className="rounded-full bg-white/75 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--muted)]"
+                              key={tag}
                             >
-                              {entry.name}
-                              {!entry.supportsImageInput ? " • unsupported for screenshots" : ""}
-                              {isSelectedElsewhere ? " • already selected" : ""}
-                            </option>
-                          );
-                        })}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            ))}
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </section>
 
@@ -760,16 +1232,54 @@ export function BuildOffClient() {
               </div>
             </div>
 
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-[var(--line)] bg-white/55 px-4 py-3">
+              <p className="text-sm leading-6 text-[var(--muted)]">
+                Preview mode renders the streamed HTML artifact live. Raw mode shows the exact model output.
+              </p>
+
+              <div className="flex items-center overflow-hidden rounded-full border border-[var(--line)] bg-white">
+                <button
+                  className={cn(
+                    "px-4 py-2 text-sm font-medium transition",
+                    outputMode === "preview"
+                      ? "bg-[var(--foreground)] text-white"
+                      : "text-[var(--muted)] hover:bg-white/80",
+                  )}
+                  onClick={() => setOutputMode("preview")}
+                  type="button"
+                >
+                  HTML preview
+                </button>
+                <button
+                  className={cn(
+                    "px-4 py-2 text-sm font-medium transition",
+                    outputMode === "raw"
+                      ? "bg-[var(--foreground)] text-white"
+                      : "text-[var(--muted)] hover:bg-white/80",
+                  )}
+                  onClick={() => setOutputMode("raw")}
+                  type="button"
+                >
+                  Raw output
+                </button>
+              </div>
+            </div>
+
             <div
               className="grid gap-4"
               style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}
             >
-              {results.map((result, index) => (
-                <section
-                  key={result.modelId}
-                  className="overflow-hidden rounded-[1.7rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--foreground)_2%,white)]"
-                  style={{ animationDelay: `${index * 70}ms` }}
-                >
+              {results.map((result, index) => {
+                const previewId = `${result.modelId}-${index}`;
+                const cardPreviewErrors = previewErrors[previewId] ?? [];
+                const hasHtml = looksLikeHtml(result.text);
+
+                return (
+                  <section
+                    key={previewId}
+                    className="overflow-hidden rounded-[1.7rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--foreground)_2%,white)]"
+                    style={{ animationDelay: `${index * 70}ms` }}
+                  >
                   <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-4">
                     <div>
                       <h3 className="text-xl font-semibold tracking-[-0.04em]">{result.label}</h3>
@@ -850,9 +1360,36 @@ export function BuildOffClient() {
 
                   <div className="min-h-80 px-4 py-4">
                     {result.text ? (
-                      <pre className="whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
-                        {result.text}
-                      </pre>
+                      outputMode === "preview" ? (
+                        <div className="space-y-3">
+                          {!hasHtml ? (
+                            <div className="rounded-[1.1rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_35%,white)] px-3 py-2 text-sm text-[var(--muted)]">
+                              No HTML tags detected yet. The live preview will become meaningful once the model starts emitting markup.
+                            </div>
+                          ) : null}
+
+                          {cardPreviewErrors.length ? (
+                            <div className="rounded-[1.1rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-3 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+                              {cardPreviewErrors.map((message, errorIndex) => (
+                                <p key={`${previewId}-error-${errorIndex}`}>{message}</p>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          <div className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-white">
+                            <iframe
+                              className="min-h-72 w-full bg-white"
+                              sandbox="allow-scripts"
+                              srcDoc={createPreviewSrcDoc(result.text, previewId)}
+                              title={`${result.label} HTML preview`}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <pre className="whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
+                          {result.text}
+                        </pre>
+                      )
                     ) : (
                       <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-[var(--muted)]">
                         {isRunning
@@ -861,8 +1398,9 @@ export function BuildOffClient() {
                       </div>
                     )}
                   </div>
-                </section>
-              ))}
+                  </section>
+                );
+              })}
             </div>
           </article>
         </section>

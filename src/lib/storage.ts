@@ -2,7 +2,7 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import { readDataUrlMeta } from "@/lib/utils";
 
-const BUCKET = process.env.TIGRIS_BUCKET ?? "llm-build-off";
+const BUCKET = process.env.TIGRIS_BUCKET ?? "llm-battle";
 
 function getS3Client() {
   return new S3Client({
