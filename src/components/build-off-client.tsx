@@ -7,8 +7,11 @@ import { DEFAULT_MODELS, DEFAULT_PROMPT, toCompareModel } from "@/lib/models";
 import type { CompareModel, GatewayModel, ModelResult, SavedRun } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const STORAGE_KEY = "llm-build-off:runs";
-const MAX_RUNS = 8;
+const MAX_RUNS = 20;
+
+function getRunImageSrc(run: SavedRun) {
+  return run.imageDataUrl || run.imageUrl || "";
+}
 
 function createEmptyResults(models: CompareModel[]): ModelResult[] {
   return models.map((model) => ({
@@ -80,6 +83,29 @@ function findFirstAvailableModel(catalog: GatewayModel[], selectedIds: string[])
   return catalog.find((model) => model.supportsImageInput && !selectedIds.includes(model.id)) ?? null;
 }
 
+function formatDuration(ms?: number) {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
+}
+
+function formatTokenCount(value?: number) {
+  if (value == null) return "—";
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatCost(value?: number) {
+  if (value == null) return "—";
+  if (value === 0) return "$0.000000";
+
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 6,
+  }).format(value);
+}
+
 export function BuildOffClient() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [imageDataUrl, setImageDataUrl] = useState("");
@@ -96,24 +122,29 @@ export function BuildOffClient() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (!stored) return;
+    void (async () => {
+      try {
+        const response = await fetch("/api/runs");
+        if (!response.ok) return;
 
-    try {
-      const parsed = JSON.parse(stored) as SavedRun[];
-      setRuns(parsed);
+        const payload = (await response.json()) as { runs?: SavedRun[] };
+        const serverRuns = payload.runs ?? [];
 
-      if (parsed[0]) {
-        setActiveRunId(parsed[0].id);
-        setPrompt(parsed[0].prompt);
-        setImageDataUrl(parsed[0].imageDataUrl);
-        setImageName(parsed[0].imageName);
-        setSelectedModels(parsed[0].models);
-        setResults(parsed[0].results);
+        if (serverRuns.length) {
+          setRuns(serverRuns);
+
+          const first = serverRuns[0];
+          setActiveRunId(first.id);
+          setPrompt(first.prompt);
+          setImageDataUrl(getRunImageSrc(first));
+          setImageName(first.imageName);
+          setSelectedModels(first.models);
+          setResults(first.results);
+        }
+      } catch {
+        // Server history unavailable — start fresh
       }
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
-    }
+    })();
   }, []);
 
   useEffect(() => {
@@ -156,14 +187,7 @@ export function BuildOffClient() {
     })();
   }, []);
 
-  useEffect(() => {
-    if (!runs.length) {
-      window.localStorage.removeItem(STORAGE_KEY);
-      return;
-    }
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(runs));
-  }, [runs]);
+  // Runs are persisted server-side in Neon — no localStorage sync needed.
 
   useEffect(() => {
     const onPaste = async (event: ClipboardEvent) => {
@@ -185,38 +209,44 @@ export function BuildOffClient() {
   }, []);
 
   function persistRun(run: SavedRun) {
-    setRuns((current) => {
-      const next = [run, ...current.filter((item) => item.id !== run.id)].slice(0, MAX_RUNS);
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      return next;
-    });
+    setRuns((current) =>
+      [run, ...current.filter((item) => item.id !== run.id)].slice(0, MAX_RUNS),
+    );
   }
 
   function updateRun(runId: string, updater: (run: SavedRun) => SavedRun) {
-    setRuns((current) => {
-      const next = current.map((run) => (run.id === runId ? updater(run) : run));
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      return next;
-    });
+    setRuns((current) => current.map((run) => (run.id === runId ? updater(run) : run)));
   }
 
-  function applyEventToResult(result: ModelResult, event: Record<string, string>) {
+  function applyEventToResult(result: ModelResult, event: Record<string, unknown>) {
     if (result.modelId !== event.modelId) return result;
 
     if (event.type === "start") {
       return {
         ...result,
         status: "streaming" as const,
-        startedAt: event.startedAt,
+        startedAt: typeof event.startedAt === "string" ? event.startedAt : undefined,
         error: undefined,
+        completedAt: undefined,
+        firstTokenAt: undefined,
+        latencyMs: undefined,
+        runtimeMs: undefined,
+        finishReason: undefined,
+        responseId: undefined,
+        usage: undefined,
+        costs: undefined,
       };
     }
 
     if (event.type === "delta") {
       return {
         ...result,
-        text: result.text + (event.delta ?? ""),
+        text: result.text + (typeof event.delta === "string" ? event.delta : ""),
         status: "streaming" as const,
+        firstTokenAt:
+          result.firstTokenAt ?? (typeof event.firstTokenAt === "string" ? event.firstTokenAt : undefined),
+        latencyMs:
+          result.latencyMs ?? (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
       };
     }
 
@@ -224,7 +254,22 @@ export function BuildOffClient() {
       return {
         ...result,
         status: "done" as const,
-        completedAt: event.completedAt,
+        completedAt: typeof event.completedAt === "string" ? event.completedAt : undefined,
+        firstTokenAt:
+          result.firstTokenAt ?? (typeof event.firstTokenAt === "string" ? event.firstTokenAt : undefined),
+        latencyMs:
+          result.latencyMs ?? (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+        runtimeMs: typeof event.runtimeMs === "number" ? event.runtimeMs : result.runtimeMs,
+        finishReason: typeof event.finishReason === "string" ? event.finishReason : result.finishReason,
+        responseId: typeof event.responseId === "string" ? event.responseId : result.responseId,
+        usage:
+          typeof event.usage === "object" && event.usage
+            ? (event.usage as ModelResult["usage"])
+            : result.usage,
+        costs:
+          typeof event.costs === "object" && event.costs
+            ? (event.costs as ModelResult["costs"])
+            : result.costs,
       };
     }
 
@@ -232,8 +277,13 @@ export function BuildOffClient() {
       return {
         ...result,
         status: "error" as const,
-        error: event.error,
-        completedAt: event.completedAt,
+        error: typeof event.error === "string" ? event.error : "Unexpected model error.",
+        completedAt: typeof event.completedAt === "string" ? event.completedAt : undefined,
+        firstTokenAt:
+          result.firstTokenAt ?? (typeof event.firstTokenAt === "string" ? event.firstTokenAt : undefined),
+        latencyMs:
+          result.latencyMs ?? (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+        runtimeMs: typeof event.runtimeMs === "number" ? event.runtimeMs : result.runtimeMs,
       };
     }
 
@@ -253,7 +303,7 @@ export function BuildOffClient() {
   function hydrateRun(run: SavedRun) {
     setActiveRunId(run.id);
     setPrompt(run.prompt);
-    setImageDataUrl(run.imageDataUrl);
+    setImageDataUrl(getRunImageSrc(run));
     setImageName(run.imageName);
     setSelectedModels(run.models);
     setResults(run.results);
@@ -277,6 +327,8 @@ export function BuildOffClient() {
               label: nextModel.name,
               text: "",
               status: "idle",
+              usage: undefined,
+              costs: undefined,
             }
           : result,
       ),
@@ -300,6 +352,8 @@ export function BuildOffClient() {
         label: nextModel.name,
         text: "",
         status: "idle",
+        usage: undefined,
+        costs: undefined,
       },
     ]);
     setErrorMessage("");
@@ -364,6 +418,7 @@ export function BuildOffClient() {
           body: JSON.stringify({
             prompt,
             imageDataUrl,
+            imageName,
             models: modelsForRun,
           }),
         });
@@ -387,7 +442,7 @@ export function BuildOffClient() {
 
           for (const line of lines) {
             if (!line.trim()) continue;
-            const event = JSON.parse(line) as Record<string, string>;
+            const event = JSON.parse(line) as Record<string, unknown>;
             setResults((current) => current.map((item) => applyEventToResult(item, event)));
             updateRun(runId, (existing) => ({
               ...existing,
@@ -730,6 +785,66 @@ export function BuildOffClient() {
                       <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
                         {result.modelId}
                       </span>
+                    </div>
+                  </div>
+
+                  <div className="border-b border-[var(--line)] px-4 py-3">
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                          Latency
+                        </p>
+                        <p className="mt-1 text-sm font-semibold">{formatDuration(result.latencyMs)}</p>
+                      </div>
+                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                          Runtime
+                        </p>
+                        <p className="mt-1 text-sm font-semibold">{formatDuration(result.runtimeMs)}</p>
+                      </div>
+                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                          Tokens
+                        </p>
+                        <p className="mt-1 text-sm font-semibold">
+                          {formatTokenCount(result.usage?.totalTokens)}
+                        </p>
+                      </div>
+                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                          Cost
+                        </p>
+                        <p className="mt-1 text-sm font-semibold">{formatCost(result.costs?.total)}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
+                      <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                        in {formatTokenCount(result.usage?.inputTokens)}
+                      </span>
+                      <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                        out {formatTokenCount(result.usage?.outputTokens)}
+                      </span>
+                      {result.usage?.reasoningTokens != null ? (
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          reasoning {formatTokenCount(result.usage.reasoningTokens)}
+                        </span>
+                      ) : null}
+                      {result.usage?.cacheReadTokens != null ? (
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          cache read {formatTokenCount(result.usage.cacheReadTokens)}
+                        </span>
+                      ) : null}
+                      {result.usage?.cacheWriteTokens != null ? (
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          cache write {formatTokenCount(result.usage.cacheWriteTokens)}
+                        </span>
+                      ) : null}
+                      {result.finishReason ? (
+                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                          finish {result.finishReason}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
 

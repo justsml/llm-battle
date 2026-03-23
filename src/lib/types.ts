@@ -78,7 +78,8 @@ export type SavedRun = {
   id: string;
   createdAt: string;
   prompt: string;
-  imageDataUrl: string;
+  imageDataUrl?: string;
+  imageUrl?: string;
   imageName: string;
   models: CompareModel[];
   results: ModelResult[];
@@ -87,5 +88,6 @@ export type SavedRun = {
 export type CompareRequest = {
   prompt: string;
   imageDataUrl: string;
+  imageName?: string;
   models: CompareModel[];
 };
