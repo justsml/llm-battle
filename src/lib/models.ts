@@ -10,10 +10,10 @@ export const DEFAULT_MODELS: CompareModel[] = [
   { id: "alibaba/qwen3-vl-instruct", label: "Qwen 3 VL Instruct" },
 ];
 
-export function isVisionCapableModel(model: Pick<GatewayModel, "type" | "tags">) {
+export function isVisionCapableModel(model: Pick<GatewayModel, "type" | "tags" | "supportsImageInput">) {
   if (model.type !== "language") return false;
 
-  return model.tags.includes("vision") || model.tags.includes("file-input");
+  return model.supportsImageInput || model.tags.includes("vision") || model.tags.includes("file-input");
 }
 
 export function toCompareModel(model: Pick<GatewayModel, "id" | "name">): CompareModel {
