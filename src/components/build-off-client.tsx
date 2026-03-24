@@ -1164,12 +1164,12 @@ export function BuildOffClient() {
 
   if (isSessionPending) {
     return (
-      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+      <main className="relative min-h-screen overflow-x-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
 
         <section className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center">
           <div className="panel rise-in w-full rounded-[2rem] p-8 text-center sm:p-10">
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-(--muted)">
+            <p className="eyebrow-label text-xs font-semibold uppercase tracking-[0.35em]">
               Visual Eval Harness
             </p>
             <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em]">Checking your session</h1>
@@ -1184,12 +1184,12 @@ export function BuildOffClient() {
 
   if (!signedInUser) {
     return (
-      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+      <main className="relative min-h-screen overflow-x-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
 
         <section className="mx-auto flex w-full max-w-5xl flex-col gap-5">
-          <header className="rise-in rounded-[2rem] border border-white/40 bg-white/30 px-5 py-5 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-(--muted)">
+          <header className="glass-shell rise-in rounded-[2rem] px-5 py-5 sm:px-7 sm:py-6">
+            <p className="eyebrow-label text-xs font-semibold uppercase tracking-[0.35em]">
               Visual Eval Harness
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
@@ -1240,13 +1240,13 @@ export function BuildOffClient() {
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+    <main className="relative min-h-screen overflow-x-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
       <div className="grain" />
 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
-        <header className="rise-in flex flex-col gap-4 rounded-[2rem] border border-white/40 bg-white/30 px-5 py-4 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-5 lg:flex-row lg:items-center lg:justify-between">
+        <header className="glass-shell floating-nav rise-in flex flex-col gap-4 rounded-[2rem] px-5 py-4 sm:px-7 sm:py-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-(--muted)">
+            <p className="eyebrow-label text-xs font-semibold uppercase tracking-[0.35em]">
               Visual Eval Harness
             </p>
             <h1 className="mt-2 text-2xl font-semibold tracking-[-0.05em]">LLM Build-Off</h1>
