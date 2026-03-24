@@ -216,6 +216,14 @@ function formatDuration(ms?: number) {
   return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
 }
 
+function liveElapsed(result: ModelResult, nowMs: number): number | undefined {
+  if (result.runtimeMs != null) return result.runtimeMs;
+  if (result.startedAt && result.status === "streaming") {
+    return Math.max(0, nowMs - Date.parse(result.startedAt));
+  }
+  return result.runtimeMs;
+}
+
 function formatTokenCount(value?: number) {
   if (value == null) return "—";
   return new Intl.NumberFormat().format(value);
@@ -337,7 +345,7 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
   return (
     <div className="relative" ref={rootRef}>
       <button
-        className="w-full rounded-[1rem] border border-[var(--line)] bg-[var(--panel)] px-3 py-3 text-left transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-[1rem] border border-[var(--line)] bg-[var(--panel)] px-3 py-3 text-left transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-60"
         disabled={disabled}
         onClick={() =>
           setIsOpen((current) => {
@@ -375,22 +383,14 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
                   </p>
                   <div className="space-y-1">
                     {models.map((entry) => {
-                      const isSelectedElsewhere = selectedModels.some(
-                        (selectedModel, selectedIndex) =>
-                          selectedIndex !== index && selectedModel.id === entry.id,
-                      );
-                      const isDisabled = isSelectedElsewhere;
-
                       return (
                         <button
                           className={cn(
                             "w-full rounded-[1rem] border px-3 py-2 text-left transition",
                             entry.id === value.id
                               ? "border-[var(--foreground)] bg-white"
-                              : "border-[var(--line)] bg-white/55 hover:bg-white",
-                            isDisabled && "cursor-not-allowed opacity-50",
+                              : "border-[var(--line)] bg-[var(--card)] hover:bg-[var(--card-active)]",
                           )}
-                          disabled={isDisabled}
                           key={entry.id}
                           onClick={() => {
                             onSelect(entry.id);
@@ -404,7 +404,7 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
                               <span className="block text-sm font-medium">{entry.name}</span>
                               <span className="mt-1 block text-xs text-[var(--muted)]">
                                 {entry.id}
-                                {isSelectedElsewhere ? " · already selected" : ""}
+
                               </span>
                             </span>
                             <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
@@ -490,7 +490,7 @@ function OutputViewport({ title, children, className, contentClassName }: Output
     <div className={cn("output-viewport relative", className)} ref={viewportRef}>
       <button
         aria-label={`${isFullscreen ? "Exit" : "Open"} ${title} full screen`}
-        className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-[var(--line)] bg-white/92 px-3 py-1.5 text-xs font-medium text-[var(--foreground)] shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-white"
+        className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-[var(--card-active)]"
         onClick={() => {
           void toggleFullscreen();
         }}
@@ -525,6 +525,7 @@ export function BuildOffClient() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [nowMs, setNowMs] = useState(0);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isAuthActionPending, setIsAuthActionPending] = useState(false);
@@ -711,6 +712,13 @@ export function BuildOffClient() {
       // Ignore unavailable localStorage.
     }
   }, [imageDataUrl, imageName, prompt, selectedModels]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 100);
+    return () => clearInterval(id);
+  }, [isRunning]);
 
   useEffect(() => {
     function handlePreviewMessage(event: MessageEvent) {
@@ -1138,7 +1146,7 @@ export function BuildOffClient() {
               "border-[color:color-mix(in_oklch,var(--accent)_28%,white)] bg-[color:color-mix(in_oklch,var(--accent)_12%,white)] text-[var(--accent)]",
             result.status === "error" &&
               "border-[color:color-mix(in_oklch,var(--danger)_28%,white)] bg-[color:color-mix(in_oklch,var(--danger)_12%,white)] text-[var(--danger)]",
-            result.status === "idle" && "border-[var(--line)] bg-white/75 text-[var(--muted)]",
+            result.status === "idle" && "border-[var(--line)] bg-[var(--card)] text-[var(--muted)]",
           )}
         >
           {formatResultStatus(result)}
@@ -1146,7 +1154,7 @@ export function BuildOffClient() {
       ),
     },
     { label: "Latency", render: (result) => formatDuration(result.latencyMs) },
-    { label: "Runtime", render: (result) => formatDuration(result.runtimeMs) },
+    { label: "Runtime", render: (result) => formatDuration(liveElapsed(result, nowMs)) },
     { label: "Input", render: (result) => formatTokenCount(result.usage?.inputTokens) },
     { label: "Output", render: (result) => formatTokenCount(result.usage?.outputTokens) },
     { label: "Total", render: (result) => formatTokenCount(result.usage?.totalTokens) },
@@ -1245,7 +1253,7 @@ export function BuildOffClient() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="inline-flex items-center gap-3 rounded-full border border-[var(--line)] bg-white/70 px-3 py-2 text-sm text-[var(--foreground)]">
+            <div className="inline-flex items-center gap-3 rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--foreground)]">
               <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-semibold uppercase tracking-[0.18em] text-[var(--foreground)]">
                 {getUserMonogram(signedInUser)}
               </span>
@@ -1258,7 +1266,7 @@ export function BuildOffClient() {
             </div>
 
             <button
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55"
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-55"
               disabled={isAuthActionPending}
               onClick={() => {
                 void handleSignOut();
@@ -1287,7 +1295,7 @@ export function BuildOffClient() {
 
             <div className="flex flex-wrap gap-2 lg:justify-end">
               <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-white"
+                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]"
                 onClick={() => {
                   const next = !isHistoryOpen;
                   setIsHistoryOpen(next);
@@ -1300,14 +1308,14 @@ export function BuildOffClient() {
                 {isHistoryOpen ? "Hide history" : `Run history${runs.length ? ` (${runs.length})` : ""}`}
               </button>
               <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-white"
+                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]"
                 onClick={() => setIsSetupCollapsed((current) => !current)}
                 type="button"
               >
                 {isSetupCollapsed ? "Expand setup" : "Collapse setup"}
               </button>
               <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-white"
+                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]"
                 onClick={() => fileInputRef.current?.click()}
                 type="button"
               >
@@ -1331,7 +1339,7 @@ export function BuildOffClient() {
             )}
           >
             <div className="overflow-hidden">
-              <div className="rounded-[1.6rem] border border-[var(--line)] bg-white/60 p-4">
+              <div className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--card)] p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
@@ -1359,10 +1367,10 @@ export function BuildOffClient() {
                         <button
                           key={run.id}
                           className={cn(
-                            "w-full rounded-[1.3rem] border px-4 py-4 text-left transition hover:-translate-y-0.5 hover:bg-white/70",
+                            "w-full rounded-[1.3rem] border px-4 py-4 text-left transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]",
                             activeRunId === run.id
                               ? "border-[var(--foreground)] bg-white"
-                              : "border-[var(--line)] bg-white/45",
+                              : "border-[var(--line)] bg-[var(--card)]",
                           )}
                           onClick={() => hydrateRun(run)}
                           type="button"
@@ -1404,7 +1412,7 @@ export function BuildOffClient() {
                     {summarizePrompt(prompt)}
                   </p>
                 </div>
-                <span className="rounded-full border border-[var(--line)] bg-white/70 px-3 py-1 text-xs font-medium text-[var(--muted)]">
+                <span className="rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
                   {selectedModels.length} models · {imageName}
                 </span>
               </div>
@@ -1447,12 +1455,12 @@ export function BuildOffClient() {
                 </div>
 
                 <div className="flex flex-col gap-3">
-                  <div className="rounded-[1.6rem] border border-[var(--line)] bg-white/65 p-4">
+                  <div className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--card)] p-4">
                     <p className="text-sm font-medium text-[var(--muted)]">Image</p>
                     <p className="mt-1 truncate text-lg font-semibold">{imageName}</p>
                   </div>
 
-                  <label className="flex flex-1 flex-col rounded-[1.6rem] border border-[var(--line)] bg-white/65 p-4">
+                  <label className="flex flex-1 flex-col rounded-[1.6rem] border border-[var(--line)] bg-[var(--card)] p-4">
                     <span className="mb-3 text-sm font-medium text-[var(--muted)]">Prompt</span>
                     <textarea
                       className="min-h-48 flex-1 resize-none bg-transparent text-sm leading-6 outline-none"
@@ -1478,9 +1486,9 @@ export function BuildOffClient() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <div className="flex items-center overflow-hidden rounded-full border border-[var(--line)] bg-white/85">
+                        <div className="flex items-center overflow-hidden rounded-full border border-[var(--line)] bg-[var(--card)]">
                           <button
-                            className="px-3 py-2 text-sm font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                            className="px-3 py-2 text-sm font-medium transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-45"
                             disabled={!canRemovePanel || isRunning}
                             onClick={() => handleTargetPanelCount(selectedModels.length - 1)}
                             type="button"
@@ -1491,7 +1499,7 @@ export function BuildOffClient() {
                             {selectedModels.length}
                           </span>
                           <button
-                            className="px-3 py-2 text-sm font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                            className="px-3 py-2 text-sm font-medium transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-45"
                             disabled={!canAddPanel || isRunning}
                             onClick={() => handleTargetPanelCount(selectedModels.length + 1)}
                             type="button"
@@ -1524,7 +1532,7 @@ export function BuildOffClient() {
                         return (
                           <div
                             key={`${model.id}-${index}`}
-                            className="rounded-[1.25rem] border border-[var(--line)] bg-white/82 p-3"
+                            className="rounded-[1.25rem] border border-[var(--line)] bg-[var(--card)] p-3"
                           >
                             <div className="mb-2 flex items-center justify-between gap-3">
                               <div className="min-w-0">
@@ -1535,7 +1543,7 @@ export function BuildOffClient() {
                               </div>
 
                               <button
-                                className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[11px] font-medium transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                                className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[11px] font-medium transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-45"
                                 disabled={!canRemovePanel || isRunning}
                                 onClick={() => handleRemovePanel(index)}
                                 type="button"
@@ -1600,7 +1608,7 @@ export function BuildOffClient() {
               </div>
             </div>
 
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-[var(--line)] bg-white/55 px-4 py-3">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-[var(--line)] bg-[var(--card)] px-4 py-3">
               <p className="text-sm leading-6 text-[var(--muted)]">
                 Preview mode renders the streamed HTML artifact live. Raw mode shows the exact model output.
               </p>
@@ -1611,7 +1619,7 @@ export function BuildOffClient() {
                     "px-4 py-2 text-sm font-medium transition",
                     outputMode === "preview"
                       ? "bg-[var(--foreground)] text-white"
-                      : "text-[var(--muted)] hover:bg-white/80",
+                      : "text-[var(--muted)] hover:bg-[var(--card-active)]",
                   )}
                   onClick={() => setOutputMode("preview")}
                   type="button"
@@ -1623,7 +1631,7 @@ export function BuildOffClient() {
                     "px-4 py-2 text-sm font-medium transition",
                     outputMode === "raw"
                       ? "bg-[var(--foreground)] text-white"
-                      : "text-[var(--muted)] hover:bg-white/80",
+                      : "text-[var(--muted)] hover:bg-[var(--card-active)]",
                   )}
                   onClick={() => setOutputMode("raw")}
                   type="button"
@@ -1703,61 +1711,68 @@ export function BuildOffClient() {
                     </div>
                   </div>
 
-                  <div className="border-b border-[var(--line)] px-4 py-3">
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
-                          Latency
-                        </p>
-                        <p className="mt-1 text-sm font-semibold">{formatDuration(result.latencyMs)}</p>
-                      </div>
-                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
-                          Runtime
-                        </p>
-                        <p className="mt-1 text-sm font-semibold">{formatDuration(result.runtimeMs)}</p>
-                      </div>
-                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
-                          Tokens
-                        </p>
-                        <p className="mt-1 text-sm font-semibold">
-                          {formatTokenCount(result.usage?.totalTokens)}
-                        </p>
-                      </div>
-                      <div className="rounded-[1rem] border border-[var(--line)] bg-white/55 px-3 py-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
-                          Cost
-                        </p>
-                        <p className="mt-1 text-sm font-semibold">{formatCost(result.costs?.total)}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
-                      <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
-                        in {formatTokenCount(result.usage?.inputTokens)}
+                  <div className="border-b border-[var(--line)] px-4 py-2">
+                    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
+                      <span className="text-[var(--muted)]">
+                        Latency{" "}
+                        <span className="font-semibold text-[var(--foreground)]">
+                          {formatDuration(result.latencyMs)}
+                        </span>
                       </span>
-                      <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
-                        out {formatTokenCount(result.usage?.outputTokens)}
+                      <span className="text-[var(--muted)]">
+                        Runtime{" "}
+                        <span className="font-semibold text-[var(--foreground)]">
+                          {formatDuration(liveElapsed(result, nowMs))}
+                        </span>
+                      </span>
+                      <span className="text-[var(--muted)]">
+                        In{" "}
+                        <span className="font-semibold text-[var(--foreground)]">
+                          {formatTokenCount(result.usage?.inputTokens)}
+                        </span>
+                      </span>
+                      <span className="text-[var(--muted)]">
+                        Out{" "}
+                        <span className="font-semibold text-[var(--foreground)]">
+                          {formatTokenCount(result.usage?.outputTokens)}
+                        </span>
                       </span>
                       {result.usage?.reasoningTokens != null ? (
-                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
-                          reasoning {formatTokenCount(result.usage.reasoningTokens)}
+                        <span className="text-[var(--muted)]">
+                          Reasoning{" "}
+                          <span className="font-semibold text-[var(--foreground)]">
+                            {formatTokenCount(result.usage.reasoningTokens)}
+                          </span>
                         </span>
                       ) : null}
                       {result.usage?.cacheReadTokens != null ? (
-                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
-                          cache read {formatTokenCount(result.usage.cacheReadTokens)}
+                        <span className="text-[var(--muted)]">
+                          Cache read{" "}
+                          <span className="font-semibold text-[var(--foreground)]">
+                            {formatTokenCount(result.usage.cacheReadTokens)}
+                          </span>
                         </span>
                       ) : null}
                       {result.usage?.cacheWriteTokens != null ? (
-                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
-                          cache write {formatTokenCount(result.usage.cacheWriteTokens)}
+                        <span className="text-[var(--muted)]">
+                          Cache write{" "}
+                          <span className="font-semibold text-[var(--foreground)]">
+                            {formatTokenCount(result.usage.cacheWriteTokens)}
+                          </span>
                         </span>
                       ) : null}
+                      <span className="text-[var(--muted)]">
+                        Cost{" "}
+                        <span className="font-semibold text-[var(--foreground)]">
+                          {formatCost(result.costs?.total)}
+                        </span>
+                      </span>
                       {result.finishReason ? (
-                        <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
-                          finish {result.finishReason}
+                        <span className="text-[var(--muted)]">
+                          Finish{" "}
+                          <span className="font-semibold text-[var(--foreground)]">
+                            {result.finishReason}
+                          </span>
                         </span>
                       ) : null}
                     </div>
@@ -1796,7 +1811,7 @@ export function BuildOffClient() {
                         </div>
                       ) : (
                         <OutputViewport
-                          className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-white/72"
+                          className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-[var(--card)]"
                           contentClassName="overflow-auto px-4 py-4"
                           title={`${result.label} raw output`}
                         >

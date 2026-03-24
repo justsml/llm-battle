@@ -1,17 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --background: oklch(0.97 0.02 79);
-  --panel: oklch(0.985 0.01 85);
-  --panel-strong: oklch(0.94 0.02 80);
-  --foreground: oklch(0.22 0.02 28);
-  --muted: oklch(0.55 0.02 42);
-  --line: color-mix(in oklch, var(--foreground) 10%, transparent);
-  --accent: oklch(0.67 0.14 38);
-  --accent-soft: oklch(0.88 0.06 58);
-  --success: oklch(0.66 0.11 154);
-  --danger: oklch(0.6 0.17 24);
-  --shadow: 0 20px 50px color-mix(in oklch, var(--foreground) 10%, transparent);
+  --background: oklch(0.09 0.010 258);
+  --panel: oklch(0.135 0.012 256);
+  --panel-strong: oklch(0.165 0.012 254);
+  --card: oklch(0.175 0.012 255);
+  --card-active: oklch(0.215 0.015 253);
+  --foreground: oklch(0.95 0.007 82);
+  --muted: oklch(0.50 0.012 260);
+  --line: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --accent: oklch(0.74 0.17 44);
+  --accent-soft: oklch(0.20 0.055 48);
+  --success: oklch(0.72 0.14 154);
+  --danger: oklch(0.66 0.19 22);
+  --shadow: 0 20px 60px color-mix(in oklch, black 40%, transparent), 0 1px 3px color-mix(in oklch, black 25%, transparent);
 }
 
 * {
@@ -26,8 +28,9 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, color-mix(in oklch, var(--accent) 13%, transparent), transparent 35%),
-    linear-gradient(180deg, oklch(0.98 0.015 83), var(--background));
+    radial-gradient(ellipse 70% 50% at -5% -5%, color-mix(in oklch, var(--accent) 14%, transparent), transparent),
+    radial-gradient(ellipse 55% 40% at 105% 105%, color-mix(in oklch, oklch(0.45 0.12 285) 10%, transparent), transparent),
+    var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), sans-serif;
 }
@@ -39,7 +42,7 @@ textarea {
 }
 
 ::selection {
-  background: color-mix(in oklch, var(--accent) 25%, white);
+  background: color-mix(in oklch, var(--accent) 40%, transparent);
 }
 
 .grain {
@@ -55,9 +58,9 @@ textarea {
 }
 
 .panel {
-  background: linear-gradient(180deg, color-mix(in oklch, var(--panel) 92%, white), var(--panel));
+  background: linear-gradient(160deg, color-mix(in oklch, var(--panel) 100%, transparent) 0%, var(--panel) 100%);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow);
+  box-shadow: 0 1px 0 inset color-mix(in oklch, white 5%, transparent), var(--shadow);
 }
 
 .rise-in {
@@ -74,7 +77,7 @@ textarea {
   max-width: none;
   border: none;
   border-radius: 0;
-  background: white;
+  background: var(--background);
 }
 
 .output-viewport:fullscreen .output-viewport__action {
