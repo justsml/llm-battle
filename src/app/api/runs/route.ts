@@ -1,15 +1,27 @@
+import { getServerSession } from "@/lib/auth";
 import { ensureSchema, isDatabaseConfigured, listRuns } from "@/lib/db";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const session = await getServerSession(request);
+  if (!session?.user) {
+    return Response.json(
+      { runs: [], error: "Sign in to access your saved runs." },
+      { status: 401 },
+    );
+  }
+
   if (!isDatabaseConfigured()) {
-    return Response.json({ runs: [] });
+    return Response.json(
+      { runs: [], error: "DATABASE_URL is required to load saved runs." },
+      { status: 500 },
+    );
   }
 
   try {
     await ensureSchema();
-    const rows = await listRuns();
+    const rows = await listRuns(session.user.id);
 
     const runs = rows.map((row) => ({
       id: row.id,

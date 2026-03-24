@@ -68,6 +68,24 @@ textarea {
   animation: pulse-dot 1.8s ease-out infinite;
 }
 
+.output-viewport:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  border: none;
+  border-radius: 0;
+  background: white;
+}
+
+.output-viewport:fullscreen .output-viewport__action {
+  top: 1rem;
+  right: 1rem;
+}
+
+.output-viewport:fullscreen .output-viewport__content {
+  height: 100vh;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;

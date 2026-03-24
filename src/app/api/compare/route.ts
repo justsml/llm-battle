@@ -1,6 +1,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { streamText } from "ai";
 
+import { getServerSession } from "@/lib/auth";
 import {
   ensureSchema,
   finalizeRun,
@@ -227,6 +228,14 @@ async function persistModelResult(params: {
 }
 
 export async function POST(request: Request) {
+  const session = await getServerSession(request);
+  if (!session?.user) {
+    return Response.json(
+      { error: "Sign in to run a build-off." },
+      { status: 401 },
+    );
+  }
+
   if (!process.env.AI_GATEWAY_API_KEY) {
     return Response.json(
       { error: "Missing AI_GATEWAY_API_KEY. Add it to your environment first." },
@@ -286,6 +295,7 @@ export async function POST(request: Request) {
       await ensureSchema();
       await insertRun({
         id: runId,
+        userId: session.user.id,
         createdAt,
         status: "running",
         prompt,

@@ -13,6 +13,7 @@ export async function ensureSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES "user"(id) ON DELETE CASCADE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ,
       status TEXT NOT NULL DEFAULT 'running',
@@ -24,6 +25,10 @@ export async function ensureSchema() {
       models JSONB NOT NULL DEFAULT '[]'::jsonb,
       results JSONB NOT NULL DEFAULT '[]'::jsonb
     )
+  `;
+  await sql`
+    ALTER TABLE runs
+    ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES "user"(id) ON DELETE CASCADE
   `;
   await sql`
     ALTER TABLE runs
@@ -79,6 +84,10 @@ export async function ensureSchema() {
     ON runs (created_at DESC)
   `;
   await sql`
+    CREATE INDEX IF NOT EXISTS runs_user_created_at_idx
+    ON runs (user_id, created_at DESC)
+  `;
+  await sql`
     CREATE INDEX IF NOT EXISTS run_model_results_run_id_idx
     ON run_model_results (run_id, model_index)
   `;
@@ -86,6 +95,7 @@ export async function ensureSchema() {
 
 export async function insertRun(run: {
   id: string;
+  userId: string;
   createdAt: string;
   status?: string;
   prompt: string;
@@ -100,6 +110,7 @@ export async function insertRun(run: {
   await sql`
     INSERT INTO runs (
       id,
+      user_id,
       created_at,
       status,
       prompt,
@@ -112,6 +123,7 @@ export async function insertRun(run: {
     )
     VALUES (
       ${run.id},
+      ${run.userId},
       ${run.createdAt},
       ${run.status ?? "running"},
       ${run.prompt},
@@ -225,6 +237,7 @@ export async function upsertRunModelResult(params: {
 
 export type RunRow = {
   id: string;
+  user_id?: string | null;
   created_at: string;
   completed_at?: string | null;
   status: string;
@@ -352,11 +365,12 @@ async function listRunModelResults(runId: string) {
   return rows as unknown as RunModelResultRow[];
 }
 
-export async function listRuns(limit = 20) {
+export async function listRuns(userId: string, limit = 20) {
   const sql = getClient();
   const rows = await sql`
     SELECT
       id,
+      user_id,
       created_at,
       completed_at,
       status,
@@ -368,6 +382,7 @@ export async function listRuns(limit = 20) {
       models,
       results
     FROM runs
+    WHERE user_id = ${userId}
     ORDER BY created_at DESC
     LIMIT ${limit}
   `;

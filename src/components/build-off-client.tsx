@@ -1,8 +1,17 @@
 "use client";
 
 import Image from "next/image";
-import { useDeferredValue, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ReactNode,
+} from "react";
 
+import { authClient } from "@/lib/auth-client";
 import { DEFAULT_MODELS, DEFAULT_PROMPT, toCompareModel } from "@/lib/models";
 import type { CompareModel, GatewayModel, ModelResult, SavedRun } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -179,7 +188,7 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
   const previewBase = `
 <style>
   :root { color-scheme: light; }
-  html, body { margin: 0; min-height: 100%; background: white; }
+  html, body { margin: 0; min-height: 100%; overflow: auto !important; background: white; }
 </style>`;
 
   if (!looksLikeHtmlDocument(markup)) {
@@ -247,6 +256,14 @@ function summarizePrompt(value: string) {
   if (!trimmed) return "No prompt yet.";
   if (trimmed.length <= 120) return trimmed;
   return `${trimmed.slice(0, 117)}...`;
+}
+
+function getUserDisplayName(user: { name?: string | null; email?: string | null }) {
+  return user.name?.trim() || user.email?.trim() || "Signed in user";
+}
+
+function getUserMonogram(user: { name?: string | null; email?: string | null }) {
+  return getUserDisplayName(user).trim().charAt(0).toUpperCase() || "U";
 }
 
 function modelMatchesQuery(model: GatewayModel, query: string) {
@@ -425,7 +442,7 @@ function LiveHtmlPreview({ markup, previewId, title, isStreaming }: LiveHtmlPrev
 
   return (
     <iframe
-      className="min-h-72 w-full bg-white"
+      className="h-full w-full bg-white"
       sandbox="allow-scripts"
       srcDoc={createPreviewSrcDoc(previewMarkup, previewId)}
       title={title}
@@ -433,7 +450,67 @@ function LiveHtmlPreview({ markup, previewId, title, isStreaming }: LiveHtmlPrev
   );
 }
 
+type OutputViewportProps = {
+  title: string;
+  children: ReactNode;
+  className?: string;
+  contentClassName?: string;
+};
+
+function OutputViewport({ title, children, className, contentClassName }: OutputViewportProps) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsFullscreen(document.fullscreenElement === viewportRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    handleFullscreenChange();
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  async function toggleFullscreen() {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    if (document.fullscreenElement === viewport) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await viewport.requestFullscreen();
+  }
+
+  return (
+    <div className={cn("output-viewport relative", className)} ref={viewportRef}>
+      <button
+        aria-label={`${isFullscreen ? "Exit" : "Open"} ${title} full screen`}
+        className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-[var(--line)] bg-white/92 px-3 py-1.5 text-xs font-medium text-[var(--foreground)] shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-white"
+        onClick={() => {
+          void toggleFullscreen();
+        }}
+        type="button"
+      >
+        {isFullscreen ? "Exit full screen" : "Full screen"}
+      </button>
+
+      <div className={cn("output-viewport__content h-[24rem] sm:h-[30rem]", contentClassName)}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function BuildOffClient() {
+  const {
+    data: sessionData,
+    isPending: isSessionPending,
+  } = authClient.useSession();
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [imageName, setImageName] = useState("Paste or upload a screenshot");
@@ -450,12 +527,16 @@ export function BuildOffClient() {
   const [isRunning, setIsRunning] = useState(false);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
+  const [isAuthActionPending, setIsAuthActionPending] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [outputMode, setOutputMode] = useState<OutputMode>("preview");
   const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const outputsRef = useRef<HTMLElement>(null);
   const restoredDraftRef = useRef(false);
   const pendingDraftModelIdsRef = useRef<string[] | null>(null);
+  const signedInUser = sessionData?.user ?? null;
+  const signedInUserId = signedInUser?.id ?? null;
 
   function focusOutputs() {
     requestAnimationFrame(() => {
@@ -466,17 +547,26 @@ export function BuildOffClient() {
   }
 
   async function loadRuns(options?: { hydrateLatest?: boolean }) {
+    if (!signedInUser) {
+      setRuns([]);
+      setRunsError("");
+      return;
+    }
+
     setIsLoadingRuns(true);
     setRunsError("");
 
     try {
       const response = await fetch("/api/runs", { cache: "no-store" });
+      const payload = (await response.json().catch(() => null)) as
+        | { runs?: SavedRun[]; error?: string }
+        | null;
+
       if (!response.ok) {
-        throw new Error("Unable to load saved runs from the database.");
+        throw new Error(payload?.error ?? "Unable to load saved runs from the database.");
       }
 
-      const payload = (await response.json()) as { runs?: SavedRun[] };
-      const serverRuns = payload.runs ?? [];
+      const serverRuns = payload?.runs ?? [];
       setRuns(serverRuns);
 
       if (options?.hydrateLatest && serverRuns.length && !restoredDraftRef.current) {
@@ -496,6 +586,10 @@ export function BuildOffClient() {
       setIsLoadingRuns(false);
     }
   }
+
+  const loadRunsForCurrentSession = useEffectEvent((options?: { hydrateLatest?: boolean }) => {
+    void loadRuns(options);
+  });
 
   useEffect(() => {
     try {
@@ -533,8 +627,17 @@ export function BuildOffClient() {
   }, []);
 
   useEffect(() => {
-    void loadRuns({ hydrateLatest: true });
-  }, []);
+    if (isSessionPending) return;
+
+    if (!signedInUserId) {
+      setRuns([]);
+      setRunsError("");
+      setIsLoadingRuns(false);
+      return;
+    }
+
+    loadRunsForCurrentSession({ hydrateLatest: true });
+  }, [isSessionPending, signedInUserId]);
 
   useEffect(() => {
     void (async () => {
@@ -860,7 +963,49 @@ export function BuildOffClient() {
     setErrorMessage("");
   }
 
+  async function handleGitHubSignIn() {
+    setAuthError("");
+    setIsAuthActionPending(true);
+
+    try {
+      await authClient.signIn.social({
+        provider: "github",
+        callbackURL: window.location.href,
+      });
+    } catch (error) {
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : "Unable to start GitHub sign-in. Check your Better Auth config.",
+      );
+    } finally {
+      setIsAuthActionPending(false);
+    }
+  }
+
+  async function handleSignOut() {
+    setAuthError("");
+    setIsAuthActionPending(true);
+
+    try {
+      await authClient.signOut();
+      setRuns([]);
+      setIsHistoryOpen(false);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Unable to sign out right now.");
+      setIsAuthActionPending(false);
+      return;
+    }
+
+    setIsAuthActionPending(false);
+  }
+
   async function handleCompare() {
+    if (!signedInUser) {
+      setErrorMessage("Sign in with GitHub to run a build-off.");
+      return;
+    }
+
     if (!imageDataUrl) {
       setErrorMessage("Add a screenshot first.");
       return;
@@ -1009,16 +1154,127 @@ export function BuildOffClient() {
     { label: "Finish", render: (result) => result.finishReason ?? "—" },
   ];
 
+  if (isSessionPending) {
+    return (
+      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
+        <div className="grain" />
+
+        <section className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center">
+          <div className="panel rise-in w-full rounded-[2rem] p-8 text-center sm:p-10">
+            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+              Visual Eval Harness
+            </p>
+            <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em]">Checking your session</h1>
+            <p className="mt-3 text-sm text-[var(--muted)]">
+              Loading Better Auth so we can restore your saved build-off workspace.
+            </p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!signedInUser) {
+    return (
+      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
+        <div className="grain" />
+
+        <section className="mx-auto flex w-full max-w-5xl flex-col gap-5">
+          <header className="rise-in rounded-[2rem] border border-white/40 bg-white/30 px-5 py-5 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+              Visual Eval Harness
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
+              Sign in to save and compare build-off runs
+            </h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)] sm:text-base">
+              GitHub OAuth is now wired through Better Auth. Once you sign in, run history stays tied
+              to your account instead of mixing together across the whole app.
+            </p>
+          </header>
+
+          <section className="panel rise-in rounded-[2rem] p-6 sm:p-8">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-2xl">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+                  Authentication
+                </p>
+                <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
+                  Continue with GitHub
+                </h2>
+                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                  Your local draft still stays in the browser, but database-backed runs and new
+                  comparisons are only available after sign-in.
+                </p>
+              </div>
+
+              <button
+                className="rounded-full bg-[var(--foreground)] px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
+                disabled={isAuthActionPending}
+                onClick={() => {
+                  void handleGitHubSignIn();
+                }}
+                type="button"
+              >
+                {isAuthActionPending ? "Redirecting..." : "Continue with GitHub"}
+              </button>
+            </div>
+
+            {authError ? (
+              <div className="mt-4 rounded-[1.1rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+                {authError}
+              </div>
+            ) : null}
+          </section>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
       <div className="grain" />
 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
-        <header className="rise-in flex items-center rounded-[2rem] border border-white/40 bg-white/30 px-5 py-4 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
-            Visual Eval Harness
-          </p>
+        <header className="rise-in flex flex-col gap-4 rounded-[2rem] border border-white/40 bg-white/30 px-5 py-4 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-5 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+              Visual Eval Harness
+            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-[-0.05em]">LLM Build-Off</h1>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="inline-flex items-center gap-3 rounded-full border border-[var(--line)] bg-white/70 px-3 py-2 text-sm text-[var(--foreground)]">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-semibold uppercase tracking-[0.18em] text-[var(--foreground)]">
+                {getUserMonogram(signedInUser)}
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{getUserDisplayName(signedInUser)}</span>
+                <span className="block truncate text-xs text-[var(--muted)]">
+                  {signedInUser.email}
+                </span>
+              </span>
+            </div>
+
+            <button
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-55"
+              disabled={isAuthActionPending}
+              onClick={() => {
+                void handleSignOut();
+              }}
+              type="button"
+            >
+              {isAuthActionPending ? "Signing out..." : "Sign out"}
+            </button>
+          </div>
         </header>
+
+        {authError ? (
+          <div className="rise-in rounded-[1.4rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+            {authError}
+          </div>
+        ) : null}
 
         <section className="panel rise-in rounded-[2rem] p-4 sm:p-5">
           <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1525,19 +1781,29 @@ export function BuildOffClient() {
                             </div>
                           ) : null}
 
-                          <div className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-white">
+                          <OutputViewport
+                            className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-white"
+                            contentClassName="overflow-hidden"
+                            title={`${result.label} HTML preview`}
+                          >
                             <LiveHtmlPreview
                               isStreaming={result.status === "streaming"}
                               markup={result.text}
                               previewId={previewId}
                               title={`${result.label} HTML preview`}
                             />
-                          </div>
+                          </OutputViewport>
                         </div>
                       ) : (
-                        <pre className="whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
-                          {result.text}
-                        </pre>
+                        <OutputViewport
+                          className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-white/72"
+                          contentClassName="overflow-auto px-4 py-4"
+                          title={`${result.label} raw output`}
+                        >
+                          <pre className="m-0 whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
+                            {result.text}
+                          </pre>
+                        </OutputViewport>
                       )
                     ) : (
                       <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-[var(--muted)]">
