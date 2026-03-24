@@ -13,7 +13,12 @@ import {
 
 import { authClient } from "@/lib/auth-client";
 import { DEFAULT_MODELS, DEFAULT_PROMPT, toCompareModel } from "@/lib/models";
-import type { CompareModel, GatewayModel, ModelResult, SavedRun } from "@/lib/types";
+import type {
+  CompareModel,
+  GatewayModel,
+  ModelResult,
+  SavedRun,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const MAX_RUNS = 20;
@@ -54,7 +59,8 @@ function toDataUrl(file: File) {
         reject(new Error("Failed to read file."));
       }
     };
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Failed to read file."));
     reader.readAsDataURL(file);
   });
 }
@@ -116,10 +122,17 @@ function getMaxSelectableModelCards(catalog: GatewayModel[]) {
 
 function getMinSelectableModelCards(catalog: GatewayModel[]) {
   if (!catalog.length) return MIN_MODEL_CARDS;
-  return Math.min(MIN_MODEL_CARDS, Math.max(1, getMaxSelectableModelCards(catalog)));
+  return Math.min(
+    MIN_MODEL_CARDS,
+    Math.max(1, getMaxSelectableModelCards(catalog)),
+  );
 }
 
-function getNextAvailableModels(catalog: GatewayModel[], selectedIds: string[], count: number) {
+function getNextAvailableModels(
+  catalog: GatewayModel[],
+  selectedIds: string[],
+  count: number,
+) {
   if (count <= 0) return [];
 
   const usedIds = new Set(selectedIds);
@@ -196,11 +209,17 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
   }
 
   if (/<head[\s>]/i.test(markup)) {
-    return markup.replace(/<head([^>]*)>/i, `<head$1>${previewBase}${previewBridge}`);
+    return markup.replace(
+      /<head([^>]*)>/i,
+      `<head$1>${previewBase}${previewBridge}`,
+    );
   }
 
   if (/<html[\s>]/i.test(markup)) {
-    return markup.replace(/<html([^>]*)>/i, `<html$1><head>${previewBase}${previewBridge}</head>`);
+    return markup.replace(
+      /<html([^>]*)>/i,
+      `<html$1><head>${previewBase}${previewBridge}</head>`,
+    );
   }
 
   if (/<body[\s>]/i.test(markup)) {
@@ -266,11 +285,17 @@ function summarizePrompt(value: string) {
   return `${trimmed.slice(0, 117)}...`;
 }
 
-function getUserDisplayName(user: { name?: string | null; email?: string | null }) {
+function getUserDisplayName(user: {
+  name?: string | null;
+  email?: string | null;
+}) {
   return user.name?.trim() || user.email?.trim() || "Signed in user";
 }
 
-function getUserMonogram(user: { name?: string | null; email?: string | null }) {
+function getUserMonogram(user: {
+  name?: string | null;
+  email?: string | null;
+}) {
   return getUserDisplayName(user).trim().charAt(0).toUpperCase() || "U";
 }
 
@@ -301,13 +326,21 @@ type ModelPickerProps = {
   onSelect: (modelId: string) => void;
 };
 
-function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect }: ModelPickerProps) {
+function ModelPicker({
+  index,
+  value,
+  catalog,
+  disabled,
+  selectedModels,
+  onSelect,
+}: ModelPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  const selectedCatalogModel = catalog.find((model) => model.id === value.id) ?? null;
+  const selectedCatalogModel =
+    catalog.find((model) => model.id === value.id) ?? null;
   const filteredModels = catalog.filter(
     (model) => model.supportsImageInput && modelMatchesQuery(model, query),
   );
@@ -356,7 +389,9 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
         }
         type="button"
       >
-        <span className="block text-sm font-medium">{selectedCatalogModel?.name ?? value.label}</span>
+        <span className="block text-sm font-medium">
+          {selectedCatalogModel?.name ?? value.label}
+        </span>
         <span className="mt-1 block truncate text-xs text-(--muted)">
           {selectedCatalogModel?.ownedBy ?? "Unknown provider"} · {value.id}
         </span>
@@ -401,10 +436,11 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
                         >
                           <span className="flex items-start justify-between gap-3">
                             <span className="block min-w-0">
-                              <span className="block text-sm font-medium">{entry.name}</span>
+                              <span className="block text-sm font-medium">
+                                {entry.name}
+                              </span>
                               <span className="mt-1 block text-xs text-(--muted)">
                                 {entry.id}
-
                               </span>
                             </span>
                             <span className="shrink-0 rounded-full border border-(--line) px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)">
@@ -436,7 +472,12 @@ type LiveHtmlPreviewProps = {
   isStreaming: boolean;
 };
 
-function LiveHtmlPreview({ markup, previewId, title, isStreaming }: LiveHtmlPreviewProps) {
+function LiveHtmlPreview({
+  markup,
+  previewId,
+  title,
+  isStreaming,
+}: LiveHtmlPreviewProps) {
   const deferredMarkup = useDeferredValue(markup);
   const previewMarkup = isStreaming ? deferredMarkup : markup;
 
@@ -457,7 +498,12 @@ type OutputViewportProps = {
   contentClassName?: string;
 };
 
-function OutputViewport({ title, children, className, contentClassName }: OutputViewportProps) {
+function OutputViewport({
+  title,
+  children,
+  className,
+  contentClassName,
+}: OutputViewportProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -487,7 +533,10 @@ function OutputViewport({ title, children, className, contentClassName }: Output
   }
 
   return (
-    <div className={cn("output-viewport relative", className)} ref={viewportRef}>
+    <div
+      className={cn("output-viewport relative", className)}
+      ref={viewportRef}
+    >
       <button
         aria-label={`${isFullscreen ? "Exit" : "Open"} ${title} full screen`}
         className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-(--line) bg-(--card) px-3 py-1.5 text-xs font-medium text-(--foreground) shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-(--card-active)"
@@ -499,7 +548,12 @@ function OutputViewport({ title, children, className, contentClassName }: Output
         {isFullscreen ? "Exit full screen" : "Full screen"}
       </button>
 
-      <div className={cn("output-viewport__content h-[24rem] sm:h-[30rem]", contentClassName)}>
+      <div
+        className={cn(
+          "output-viewport__content h-[24rem] sm:h-[30rem]",
+          contentClassName,
+        )}
+      >
         {children}
       </div>
     </div>
@@ -507,18 +561,19 @@ function OutputViewport({ title, children, className, contentClassName }: Output
 }
 
 export function BuildOffClient() {
-  const {
-    data: sessionData,
-    isPending: isSessionPending,
-  } = authClient.useSession();
+  const { data: sessionData, isPending: isSessionPending } =
+    authClient.useSession();
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [imageName, setImageName] = useState("Paste or upload a screenshot");
   const [runs, setRuns] = useState<SavedRun[]>([]);
   const [runsError, setRunsError] = useState("");
-  const [selectedModels, setSelectedModels] = useState<CompareModel[]>(DEFAULT_MODELS);
+  const [selectedModels, setSelectedModels] =
+    useState<CompareModel[]>(DEFAULT_MODELS);
   const [catalog, setCatalog] = useState<GatewayModel[]>([]);
-  const [results, setResults] = useState<ModelResult[]>(createEmptyResults(DEFAULT_MODELS));
+  const [results, setResults] = useState<ModelResult[]>(
+    createEmptyResults(DEFAULT_MODELS),
+  );
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [modelsError, setModelsError] = useState("");
@@ -531,7 +586,9 @@ export function BuildOffClient() {
   const [isAuthActionPending, setIsAuthActionPending] = useState(false);
   const [authError, setAuthError] = useState("");
   const [outputMode, setOutputMode] = useState<OutputMode>("preview");
-  const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>(
+    {},
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const outputsRef = useRef<HTMLElement>(null);
   const restoredDraftRef = useRef(false);
@@ -542,7 +599,10 @@ export function BuildOffClient() {
   function focusOutputs() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        outputsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        outputsRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
       });
     });
   }
@@ -559,18 +619,25 @@ export function BuildOffClient() {
 
     try {
       const response = await fetch("/api/runs", { cache: "no-store" });
-      const payload = (await response.json().catch(() => null)) as
-        | { runs?: SavedRun[]; error?: string }
-        | null;
+      const payload = (await response.json().catch(() => null)) as {
+        runs?: SavedRun[];
+        error?: string;
+      } | null;
 
       if (!response.ok) {
-        throw new Error(payload?.error ?? "Unable to load saved runs from the database.");
+        throw new Error(
+          payload?.error ?? "Unable to load saved runs from the database.",
+        );
       }
 
       const serverRuns = payload?.runs ?? [];
       setRuns(serverRuns);
 
-      if (options?.hydrateLatest && serverRuns.length && !restoredDraftRef.current) {
+      if (
+        options?.hydrateLatest &&
+        serverRuns.length &&
+        !restoredDraftRef.current
+      ) {
         const first = serverRuns[0];
         setActiveRunId(first.id);
         setPrompt(first.prompt);
@@ -581,16 +648,20 @@ export function BuildOffClient() {
       }
     } catch (error) {
       setRunsError(
-        error instanceof Error ? error.message : "Unable to load saved runs from the database.",
+        error instanceof Error
+          ? error.message
+          : "Unable to load saved runs from the database.",
       );
     } finally {
       setIsLoadingRuns(false);
     }
   }
 
-  const loadRunsForCurrentSession = useEffectEvent((options?: { hydrateLatest?: boolean }) => {
-    void loadRuns(options);
-  });
+  const loadRunsForCurrentSession = useEffectEvent(
+    (options?: { hydrateLatest?: boolean }) => {
+      void loadRuns(options);
+    },
+  );
 
   useEffect(() => {
     try {
@@ -618,7 +689,10 @@ export function BuildOffClient() {
         setImageName(draft.imageName);
       }
 
-      if (Array.isArray(draft.selectedModelIds) && draft.selectedModelIds.length) {
+      if (
+        Array.isArray(draft.selectedModelIds) &&
+        draft.selectedModelIds.length
+      ) {
         pendingDraftModelIdsRef.current = draft.selectedModelIds;
         restoredDraftRef.current = true;
       }
@@ -654,10 +728,16 @@ export function BuildOffClient() {
         setCatalog(nextCatalog);
         const selectedFromDraft =
           pendingDraftModelIdsRef.current
-            ?.map((modelId) => nextCatalog.find((model) => model.id === modelId))
-            .filter((model): model is GatewayModel => model != null && model.supportsImageInput)
+            ?.map((modelId) =>
+              nextCatalog.find((model) => model.id === modelId),
+            )
             .filter(
-              (model, index, models) => models.findIndex((entry) => entry.id === model.id) === index,
+              (model): model is GatewayModel =>
+                model != null && model.supportsImageInput,
+            )
+            .filter(
+              (model, index, models) =>
+                models.findIndex((entry) => entry.id === model.id) === index,
             ) ?? [];
 
         if (selectedFromDraft.length) {
@@ -669,7 +749,9 @@ export function BuildOffClient() {
           setSelectedModels((current) => syncModelLabels(current, nextCatalog));
           setResults((current) =>
             current.map((result) => {
-              const match = nextCatalog.find((model) => model.id === result.modelId);
+              const match = nextCatalog.find(
+                (model) => model.id === result.modelId,
+              );
               return match ? { ...result, label: match.name } : result;
             }),
           );
@@ -680,7 +762,9 @@ export function BuildOffClient() {
             ...run,
             models: syncModelLabels(run.models, nextCatalog),
             results: run.results.map((result) => {
-              const match = nextCatalog.find((model) => model.id === result.modelId);
+              const match = nextCatalog.find(
+                (model) => model.id === result.modelId,
+              );
               return match ? { ...result, label: match.name } : result;
             }),
           })),
@@ -689,7 +773,9 @@ export function BuildOffClient() {
         setModelsError("");
       } catch (error) {
         setModelsError(
-          error instanceof Error ? error.message : "Unable to load Vercel AI Gateway models.",
+          error instanceof Error
+            ? error.message
+            : "Unable to load Vercel AI Gateway models.",
         );
       } finally {
         setIsLoadingModels(false);
@@ -744,7 +830,11 @@ export function BuildOffClient() {
         return;
       }
 
-      if (data.kind === "error" && typeof data.message === "string" && data.message.trim()) {
+      if (
+        data.kind === "error" &&
+        typeof data.message === "string" &&
+        data.message.trim()
+      ) {
         setPreviewErrors((current) => {
           const existing = current[data.previewId] ?? [];
           if (existing.includes(data.message)) return current;
@@ -767,7 +857,10 @@ export function BuildOffClient() {
     const minCards = getMinSelectableModelCards(catalog);
     const maxCards = getMaxSelectableModelCards(catalog);
 
-    if (selectedModels.length >= minCards && selectedModels.length <= maxCards) {
+    if (
+      selectedModels.length >= minCards &&
+      selectedModels.length <= maxCards
+    ) {
       return;
     }
 
@@ -815,17 +908,23 @@ export function BuildOffClient() {
   }
 
   function updateRun(runId: string, updater: (run: SavedRun) => SavedRun) {
-    setRuns((current) => current.map((run) => (run.id === runId ? updater(run) : run)));
+    setRuns((current) =>
+      current.map((run) => (run.id === runId ? updater(run) : run)),
+    );
   }
 
-  function applyEventToResult(result: ModelResult, event: Record<string, unknown>) {
+  function applyEventToResult(
+    result: ModelResult,
+    event: Record<string, unknown>,
+  ) {
     if (result.modelId !== event.modelId) return result;
 
     if (event.type === "start") {
       return {
         ...result,
         status: "streaming" as const,
-        startedAt: typeof event.startedAt === "string" ? event.startedAt : undefined,
+        startedAt:
+          typeof event.startedAt === "string" ? event.startedAt : undefined,
         error: undefined,
         completedAt: undefined,
         firstTokenAt: undefined,
@@ -841,12 +940,17 @@ export function BuildOffClient() {
     if (event.type === "delta") {
       return {
         ...result,
-        text: result.text + (typeof event.delta === "string" ? event.delta : ""),
+        text:
+          result.text + (typeof event.delta === "string" ? event.delta : ""),
         status: "streaming" as const,
         firstTokenAt:
-          result.firstTokenAt ?? (typeof event.firstTokenAt === "string" ? event.firstTokenAt : undefined),
+          result.firstTokenAt ??
+          (typeof event.firstTokenAt === "string"
+            ? event.firstTokenAt
+            : undefined),
         latencyMs:
-          result.latencyMs ?? (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+          result.latencyMs ??
+          (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
       };
     }
 
@@ -854,14 +958,28 @@ export function BuildOffClient() {
       return {
         ...result,
         status: "done" as const,
-        completedAt: typeof event.completedAt === "string" ? event.completedAt : undefined,
+        completedAt:
+          typeof event.completedAt === "string" ? event.completedAt : undefined,
         firstTokenAt:
-          result.firstTokenAt ?? (typeof event.firstTokenAt === "string" ? event.firstTokenAt : undefined),
+          result.firstTokenAt ??
+          (typeof event.firstTokenAt === "string"
+            ? event.firstTokenAt
+            : undefined),
         latencyMs:
-          result.latencyMs ?? (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
-        runtimeMs: typeof event.runtimeMs === "number" ? event.runtimeMs : result.runtimeMs,
-        finishReason: typeof event.finishReason === "string" ? event.finishReason : result.finishReason,
-        responseId: typeof event.responseId === "string" ? event.responseId : result.responseId,
+          result.latencyMs ??
+          (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+        runtimeMs:
+          typeof event.runtimeMs === "number"
+            ? event.runtimeMs
+            : result.runtimeMs,
+        finishReason:
+          typeof event.finishReason === "string"
+            ? event.finishReason
+            : result.finishReason,
+        responseId:
+          typeof event.responseId === "string"
+            ? event.responseId
+            : result.responseId,
         usage:
           typeof event.usage === "object" && event.usage
             ? (event.usage as ModelResult["usage"])
@@ -877,13 +995,24 @@ export function BuildOffClient() {
       return {
         ...result,
         status: "error" as const,
-        error: typeof event.error === "string" ? event.error : "Unexpected model error.",
-        completedAt: typeof event.completedAt === "string" ? event.completedAt : undefined,
+        error:
+          typeof event.error === "string"
+            ? event.error
+            : "Unexpected model error.",
+        completedAt:
+          typeof event.completedAt === "string" ? event.completedAt : undefined,
         firstTokenAt:
-          result.firstTokenAt ?? (typeof event.firstTokenAt === "string" ? event.firstTokenAt : undefined),
+          result.firstTokenAt ??
+          (typeof event.firstTokenAt === "string"
+            ? event.firstTokenAt
+            : undefined),
         latencyMs:
-          result.latencyMs ?? (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
-        runtimeMs: typeof event.runtimeMs === "number" ? event.runtimeMs : result.runtimeMs,
+          result.latencyMs ??
+          (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+        runtimeMs:
+          typeof event.runtimeMs === "number"
+            ? event.runtimeMs
+            : result.runtimeMs,
       };
     }
 
@@ -954,7 +1083,10 @@ export function BuildOffClient() {
       if (!additions.length) return;
 
       setSelectedModels((current) => [...current, ...additions]);
-      setResults((current) => [...current, ...additions.map(createEmptyResult)]);
+      setResults((current) => [
+        ...current,
+        ...additions.map(createEmptyResult),
+      ]);
     } else {
       setSelectedModels((current) => current.slice(0, clampedCount));
       setResults((current) => current.slice(0, clampedCount));
@@ -966,8 +1098,12 @@ export function BuildOffClient() {
   function handleRemovePanel(index: number) {
     if (selectedModels.length <= getMinSelectableModelCards(catalog)) return;
 
-    setSelectedModels((current) => current.filter((_, currentIndex) => currentIndex !== index));
-    setResults((current) => current.filter((_, currentIndex) => currentIndex !== index));
+    setSelectedModels((current) =>
+      current.filter((_, currentIndex) => currentIndex !== index),
+    );
+    setResults((current) =>
+      current.filter((_, currentIndex) => currentIndex !== index),
+    );
     setErrorMessage("");
   }
 
@@ -1000,7 +1136,11 @@ export function BuildOffClient() {
       setRuns([]);
       setIsHistoryOpen(false);
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Unable to sign out right now.");
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : "Unable to sign out right now.",
+      );
       setIsAuthActionPending(false);
       return;
     }
@@ -1033,7 +1173,9 @@ export function BuildOffClient() {
     });
 
     if (unsupported) {
-      setErrorMessage(`${unsupported.label} does not support screenshot input in the Gateway catalog.`);
+      setErrorMessage(
+        `${unsupported.label} does not support screenshot input in the Gateway catalog.`,
+      );
       return;
     }
 
@@ -1077,7 +1219,9 @@ export function BuildOffClient() {
         });
 
         if (!response.ok || !response.body) {
-          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          const payload = (await response.json().catch(() => null)) as {
+            error?: string;
+          } | null;
           throw new Error(payload?.error ?? "The compare request failed.");
         }
 
@@ -1096,15 +1240,22 @@ export function BuildOffClient() {
           for (const line of lines) {
             if (!line.trim()) continue;
             const event = JSON.parse(line) as Record<string, unknown>;
-            setResults((current) => current.map((item) => applyEventToResult(item, event)));
+            setResults((current) =>
+              current.map((item) => applyEventToResult(item, event)),
+            );
             updateRun(runId, (existing) => ({
               ...existing,
-              results: existing.results.map((item) => applyEventToResult(item, event)),
+              results: existing.results.map((item) =>
+                applyEventToResult(item, event),
+              ),
             }));
           }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unable to compare right now.";
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unable to compare right now.";
         setErrorMessage(message);
         setResults((current) => {
           const next: ModelResult[] = current.map((item) => ({
@@ -1128,7 +1279,8 @@ export function BuildOffClient() {
 
   const maxSelectableCards = getMaxSelectableModelCards(catalog);
   const minSelectableCards = getMinSelectableModelCards(catalog);
-  const canAddPanel = !isLoadingModels && selectedModels.length < maxSelectableCards;
+  const canAddPanel =
+    !isLoadingModels && selectedModels.length < maxSelectableCards;
   const canRemovePanel = selectedModels.length > minSelectableCards;
   const comparisonRows: Array<{
     label: string;
@@ -1146,7 +1298,8 @@ export function BuildOffClient() {
               "border-[color-mix(in_oklch,var(--accent)_38%,transparent)] bg-[color-mix(in_oklch,var(--accent)_18%,transparent)] text-(--accent)",
             result.status === "error" &&
               "border-[color-mix(in_oklch,var(--danger)_38%,transparent)] bg-[color-mix(in_oklch,var(--danger)_18%,transparent)] text-(--danger)",
-            result.status === "idle" && "border-(--line) bg-(--card) text-(--muted)",
+            result.status === "idle" &&
+              "border-(--line) bg-(--card) text-(--muted)",
           )}
         >
           {formatResultStatus(result)}
@@ -1154,10 +1307,22 @@ export function BuildOffClient() {
       ),
     },
     { label: "Latency", render: (result) => formatDuration(result.latencyMs) },
-    { label: "Runtime", render: (result) => formatDuration(liveElapsed(result, nowMs)) },
-    { label: "Input", render: (result) => formatTokenCount(result.usage?.inputTokens) },
-    { label: "Output", render: (result) => formatTokenCount(result.usage?.outputTokens) },
-    { label: "Total", render: (result) => formatTokenCount(result.usage?.totalTokens) },
+    {
+      label: "Runtime",
+      render: (result) => formatDuration(liveElapsed(result, nowMs)),
+    },
+    {
+      label: "Input",
+      render: (result) => formatTokenCount(result.usage?.inputTokens),
+    },
+    {
+      label: "Output",
+      render: (result) => formatTokenCount(result.usage?.outputTokens),
+    },
+    {
+      label: "Total",
+      render: (result) => formatTokenCount(result.usage?.totalTokens),
+    },
     { label: "Cost", render: (result) => formatCost(result.costs?.total) },
     { label: "Finish", render: (result) => result.finishReason ?? "—" },
   ];
@@ -1172,9 +1337,12 @@ export function BuildOffClient() {
             <p className="eyebrow-label text-xs font-semibold uppercase tracking-[0.35em]">
               Visual Eval Harness
             </p>
-            <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em]">Checking your session</h1>
+            <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em]">
+              Checking your session
+            </h1>
             <p className="mt-3 text-sm text-(--muted)">
-              Loading Better Auth so we can restore your saved build-off workspace.
+              Loading Better Auth so we can restore your saved build-off
+              workspace.
             </p>
           </div>
         </section>
@@ -1196,8 +1364,9 @@ export function BuildOffClient() {
               Sign in to save and compare build-off runs
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-(--muted) sm:text-base">
-              GitHub OAuth is now wired through Better Auth. Once you sign in, run history stays tied
-              to your account instead of mixing together across the whole app.
+              GitHub OAuth is now wired through Better Auth. Once you sign in,
+              run history stays tied to your account instead of mixing together
+              across the whole app.
             </p>
           </header>
 
@@ -1211,8 +1380,9 @@ export function BuildOffClient() {
                   Continue with GitHub
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-(--muted)">
-                  Your local draft still stays in the browser, but database-backed runs and new
-                  comparisons are only available after sign-in.
+                  Your local draft still stays in the browser, but
+                  database-backed runs and new comparisons are only available
+                  after sign-in.
                 </p>
               </div>
 
@@ -1224,7 +1394,9 @@ export function BuildOffClient() {
                 }}
                 type="button"
               >
-                {isAuthActionPending ? "Redirecting..." : "Continue with GitHub"}
+                {isAuthActionPending
+                  ? "Redirecting..."
+                  : "Continue with GitHub"}
               </button>
             </div>
 
@@ -1244,36 +1416,41 @@ export function BuildOffClient() {
       <div className="grain" />
 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
-        <header className="glass-shell floating-nav rise-in flex flex-col gap-4 rounded-[2rem] px-5 py-4 sm:px-7 sm:py-5 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="eyebrow-label text-xs font-semibold uppercase tracking-[0.35em]">
-              Visual Eval Harness
-            </p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-[-0.05em]">LLM Build-Off</h1>
+        <header className="glass-shell floating-nav rise-in flex items-center justify-between gap-4 rounded-[3rem] px-4 py-2 sm:px-5">
+          {/* Brand */}
+          <div className="flex items-center gap-3 pl-1">
+            <h1 className="text-sm font-semibold tracking-[-0.02em]">
+              LLM Build-Off
+            </h1>
+            <span
+              aria-hidden="true"
+              className="h-3.5 w-px bg-(--foreground) opacity-20"
+            />
+            <span className="eyebrow-label hidden text-[11px] font-medium uppercase sm:block">
+              Eval Harness
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="inline-flex items-center gap-3 rounded-full border border-(--line) bg-(--card) px-3 py-2 text-sm text-(--foreground)">
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-(--accent-soft) text-xs font-semibold uppercase tracking-[0.18em] text-(--foreground)">
+          {/* User + action */}
+          <div className="flex items-center gap-1">
+            <div className="flex items-center gap-2 rounded-full py-1.5 pl-2 pr-3 [background:color-mix(in_oklch,var(--foreground)_7%,transparent)]">
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-(--accent-soft) text-[10px] font-semibold uppercase tracking-wide">
                 {getUserMonogram(signedInUser)}
               </span>
-              <span className="min-w-0">
-                <span className="block truncate font-medium">{getUserDisplayName(signedInUser)}</span>
-                <span className="block truncate text-xs text-(--muted)">
-                  {signedInUser.email}
-                </span>
+              <span className="hidden max-w-45 truncate text-xs font-medium sm:block">
+                {getUserDisplayName(signedInUser)}
               </span>
             </div>
 
             <button
-              className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-55"
+              className="rounded-full px-4 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-40"
               disabled={isAuthActionPending}
               onClick={() => {
                 void handleSignOut();
               }}
               type="button"
             >
-              {isAuthActionPending ? "Signing out..." : "Sign out"}
+              {isAuthActionPending ? "Signing out…" : "Sign out"}
             </button>
           </div>
         </header>
@@ -1290,7 +1467,9 @@ export function BuildOffClient() {
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                 Reference
               </p>
-              <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">Screenshot + prompt</h2>
+              <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
+                Screenshot + prompt
+              </h2>
             </div>
 
             <div className="flex flex-wrap gap-2 lg:justify-end">
@@ -1305,7 +1484,9 @@ export function BuildOffClient() {
                 }}
                 type="button"
               >
-                {isHistoryOpen ? "Hide history" : `Run history${runs.length ? ` (${runs.length})` : ""}`}
+                {isHistoryOpen
+                  ? "Hide history"
+                  : `Run history${runs.length ? ` (${runs.length})` : ""}`}
               </button>
               <button
                 className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
@@ -1335,7 +1516,9 @@ export function BuildOffClient() {
           <div
             className={cn(
               "grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-              isHistoryOpen ? "mb-4 grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-80",
+              isHistoryOpen
+                ? "mb-4 grid-rows-[1fr] opacity-100"
+                : "grid-rows-[0fr] opacity-80",
             )}
           >
             <div className="overflow-hidden">
@@ -1350,7 +1533,9 @@ export function BuildOffClient() {
                     </h3>
                   </div>
                   <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
-                    {isLoadingRuns ? "Refreshing..." : `${runs.length}/${MAX_RUNS}`}
+                    {isLoadingRuns
+                      ? "Refreshing..."
+                      : `${runs.length}/${MAX_RUNS}`}
                   </span>
                 </div>
 
@@ -1379,9 +1564,13 @@ export function BuildOffClient() {
                             <span className="text-sm font-semibold text-(--muted)">
                               Run {runs.length - index}
                             </span>
-                            <span className="text-xs text-(--muted)">{formatTimestamp(run.createdAt)}</span>
+                            <span className="text-xs text-(--muted)">
+                              {formatTimestamp(run.createdAt)}
+                            </span>
                           </div>
-                          <p className="line-clamp-2 text-sm leading-6">{run.prompt}</p>
+                          <p className="line-clamp-2 text-sm leading-6">
+                            {run.prompt}
+                          </p>
                         </button>
                       ))}
                     </div>
@@ -1422,7 +1611,9 @@ export function BuildOffClient() {
           <div
             className={cn(
               "grid transition-[grid-template-rows,opacity] duration-400 ease-[cubic-bezier(0.22,1,0.36,1)]",
-              isSetupCollapsed ? "grid-rows-[0fr] overflow-hidden opacity-70" : "grid-rows-[1fr] opacity-100",
+              isSetupCollapsed
+                ? "grid-rows-[0fr] overflow-hidden opacity-70"
+                : "grid-rows-[1fr] opacity-100",
             )}
           >
             <div className="min-h-0">
@@ -1449,7 +1640,8 @@ export function BuildOffClient() {
                     </div>
                   ) : (
                     <div className="flex aspect-[16/10] items-center justify-center p-8 text-center text-sm text-(--muted)">
-                      Paste any screenshot from your clipboard, or upload one here.
+                      Paste any screenshot from your clipboard, or upload one
+                      here.
                     </div>
                   )}
                 </div>
@@ -1457,11 +1649,15 @@ export function BuildOffClient() {
                 <div className="flex flex-col gap-3">
                   <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
                     <p className="text-sm font-medium text-(--muted)">Image</p>
-                    <p className="mt-1 truncate text-lg font-semibold">{imageName}</p>
+                    <p className="mt-1 truncate text-lg font-semibold">
+                      {imageName}
+                    </p>
                   </div>
 
                   <label className="flex flex-1 flex-col rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
-                    <span className="mb-3 text-sm font-medium text-(--muted)">Prompt</span>
+                    <span className="mb-3 text-sm font-medium text-(--muted)">
+                      Prompt
+                    </span>
                     <textarea
                       className="min-h-48 flex-1 resize-none bg-transparent text-sm leading-6 outline-none"
                       onChange={(event) => setPrompt(event.target.value)}
@@ -1482,7 +1678,9 @@ export function BuildOffClient() {
                         <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                           Lineup
                         </p>
-                        <h3 className="mt-1 text-xl font-semibold tracking-[-0.04em]">Models</h3>
+                        <h3 className="mt-1 text-xl font-semibold tracking-[-0.04em]">
+                          Models
+                        </h3>
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -1490,7 +1688,9 @@ export function BuildOffClient() {
                           <button
                             className="px-3 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
                             disabled={!canRemovePanel || isRunning}
-                            onClick={() => handleTargetPanelCount(selectedModels.length - 1)}
+                            onClick={() =>
+                              handleTargetPanelCount(selectedModels.length - 1)
+                            }
                             type="button"
                           >
                             -
@@ -1501,7 +1701,9 @@ export function BuildOffClient() {
                           <button
                             className="px-3 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
                             disabled={!canAddPanel || isRunning}
-                            onClick={() => handleTargetPanelCount(selectedModels.length + 1)}
+                            onClick={() =>
+                              handleTargetPanelCount(selectedModels.length + 1)
+                            }
                             type="button"
                           >
                             +
@@ -1515,7 +1717,8 @@ export function BuildOffClient() {
                     </div>
 
                     <p className="mt-3 text-sm leading-6 text-(--muted)">
-                      Keep the matchup tight with a smaller list of vision-capable models.
+                      Keep the matchup tight with a smaller list of
+                      vision-capable models.
                     </p>
 
                     {modelsError ? (
@@ -1527,7 +1730,8 @@ export function BuildOffClient() {
                     <div className="mt-4 space-y-2">
                       {selectedModels.map((model, index) => {
                         const selectedCatalogModel =
-                          catalog.find((entry) => entry.id === model.id) ?? null;
+                          catalog.find((entry) => entry.id === model.id) ??
+                          null;
 
                         return (
                           <div
@@ -1539,7 +1743,9 @@ export function BuildOffClient() {
                                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                                   Panel {index + 1}
                                 </p>
-                                <p className="mt-1 truncate text-sm font-medium">{model.label}</p>
+                                <p className="mt-1 truncate text-sm font-medium">
+                                  {model.label}
+                                </p>
                               </div>
 
                               <button
@@ -1556,7 +1762,9 @@ export function BuildOffClient() {
                               catalog={catalog}
                               disabled={isLoadingModels || isRunning}
                               index={index}
-                              onSelect={(modelId) => handleModelChange(index, modelId)}
+                              onSelect={(modelId) =>
+                                handleModelChange(index, modelId)
+                              }
                               selectedModels={selectedModels}
                               value={model}
                             />
@@ -1567,13 +1775,23 @@ export function BuildOffClient() {
                                   {selectedCatalogModel.ownedBy}
                                 </span>
                                 <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  {formatMonthYear(selectedCatalogModel.releasedAt)}
+                                  {formatMonthYear(
+                                    selectedCatalogModel.releasedAt,
+                                  )}
                                 </span>
                                 <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  in {formatRatePerMillion(selectedCatalogModel.pricing.input)}/1M
+                                  in{" "}
+                                  {formatRatePerMillion(
+                                    selectedCatalogModel.pricing.input,
+                                  )}
+                                  /1M
                                 </span>
                                 <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  out {formatRatePerMillion(selectedCatalogModel.pricing.output)}/1M
+                                  out{" "}
+                                  {formatRatePerMillion(
+                                    selectedCatalogModel.pricing.output,
+                                  )}
+                                  /1M
                                 </span>
                               </div>
                             ) : null}
@@ -1610,7 +1828,8 @@ export function BuildOffClient() {
 
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-(--line) bg-(--card) px-4 py-3">
               <p className="text-sm leading-6 text-(--muted)">
-                Preview mode renders the streamed HTML artifact live. Raw mode shows the exact model output.
+                Preview mode renders the streamed HTML artifact live. Raw mode
+                shows the exact model output.
               </p>
 
               <div className="flex items-center overflow-hidden rounded-full border border-(--line) bg-(--card)">
@@ -1640,7 +1859,7 @@ export function BuildOffClient() {
                 </button>
               </div>
             </div>
-
+            {/* 
             <div className="mb-4 overflow-hidden rounded-[1.35rem] border border-(--line) bg-(--card)">
               <div className="overflow-x-auto">
                 <table className="min-w-full border-separate border-spacing-0 text-sm">
@@ -1679,11 +1898,13 @@ export function BuildOffClient() {
                   </tbody>
                 </table>
               </div>
-            </div>
+            </div> */}
 
             <div
               className="grid gap-4"
-              style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}
+              style={{
+                gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+              }}
             >
               {results.map((result, index) => {
                 const previewId = `${result.modelId}-${index}`;
@@ -1696,138 +1917,151 @@ export function BuildOffClient() {
                     className="overflow-hidden rounded-[1.7rem] border border-(--line) bg-(--card)"
                     style={{ animationDelay: `${index * 70}ms` }}
                   >
-                  <div className="flex items-center justify-between border-b border-(--line) px-4 py-4">
-                    <div>
-                      <h3 className="text-xl font-semibold tracking-[-0.04em]">{result.label}</h3>
-                      <p className={cn("mt-1 text-sm font-medium", statusTone(result.status))}>
-                        {formatResultStatus(result)}
-                      </p>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
-                        {result.modelId}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="border-b border-(--line) px-4 py-2">
-                    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
-                      <span className="text-(--muted)">
-                        Latency{" "}
-                        <span className="font-semibold text-(--foreground)">
-                          {formatDuration(result.latencyMs)}
-                        </span>
-                      </span>
-                      <span className="text-(--muted)">
-                        Runtime{" "}
-                        <span className="font-semibold text-(--foreground)">
-                          {formatDuration(liveElapsed(result, nowMs))}
-                        </span>
-                      </span>
-                      <span className="text-(--muted)">
-                        In{" "}
-                        <span className="font-semibold text-(--foreground)">
-                          {formatTokenCount(result.usage?.inputTokens)}
-                        </span>
-                      </span>
-                      <span className="text-(--muted)">
-                        Out{" "}
-                        <span className="font-semibold text-(--foreground)">
-                          {formatTokenCount(result.usage?.outputTokens)}
-                        </span>
-                      </span>
-                      {result.usage?.reasoningTokens != null ? (
-                        <span className="text-(--muted)">
-                          Reasoning{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatTokenCount(result.usage.reasoningTokens)}
-                          </span>
-                        </span>
-                      ) : null}
-                      {result.usage?.cacheReadTokens != null ? (
-                        <span className="text-(--muted)">
-                          Cache read{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatTokenCount(result.usage.cacheReadTokens)}
-                          </span>
-                        </span>
-                      ) : null}
-                      {result.usage?.cacheWriteTokens != null ? (
-                        <span className="text-(--muted)">
-                          Cache write{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatTokenCount(result.usage.cacheWriteTokens)}
-                          </span>
-                        </span>
-                      ) : null}
-                      <span className="text-(--muted)">
-                        Cost{" "}
-                        <span className="font-semibold text-(--foreground)">
-                          {formatCost(result.costs?.total)}
-                        </span>
-                      </span>
-                      {result.finishReason ? (
-                        <span className="text-(--muted)">
-                          Finish{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {result.finishReason}
-                          </span>
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="min-h-80 px-4 py-4">
-                    {result.text ? (
-                      outputMode === "preview" ? (
-                        <div className="space-y-3">
-                          {!hasHtml ? (
-                            <div className="rounded-[1.1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-sm text-(--muted)">
-                              No HTML tags detected yet. The live preview will become meaningful once the model starts emitting markup.
-                            </div>
-                          ) : null}
-
-                          {cardPreviewErrors.length ? (
-                            <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-3 text-sm text-(--danger)">
-                              {cardPreviewErrors.map((message, errorIndex) => (
-                                <p key={`${previewId}-error-${errorIndex}`}>{message}</p>
-                              ))}
-                            </div>
-                          ) : null}
-
-                          <OutputViewport
-                            className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
-                            contentClassName="overflow-hidden"
-                            title={`${result.label} HTML preview`}
-                          >
-                            <LiveHtmlPreview
-                              isStreaming={result.status === "streaming"}
-                              markup={result.text}
-                              previewId={previewId}
-                              title={`${result.label} HTML preview`}
-                            />
-                          </OutputViewport>
-                        </div>
-                      ) : (
-                        <OutputViewport
-                          className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
-                          contentClassName="overflow-auto px-4 py-4"
-                          title={`${result.label} raw output`}
+                    <div className="flex items-center justify-between border-b border-(--line) px-4 py-4">
+                      <div>
+                        <h3 className="text-xl font-semibold tracking-[-0.04em]">
+                          {result.label}
+                        </h3>
+                        <p
+                          className={cn(
+                            "mt-1 text-sm font-medium",
+                            statusTone(result.status),
+                          )}
                         >
-                          <pre className="m-0 whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
-                            {result.text}
-                          </pre>
-                        </OutputViewport>
-                      )
-                    ) : (
-                      <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-(--muted)">
-                        {isRunning
-                          ? "This panel will fill as soon as the model starts sending tokens."
-                          : "Run the harness to compare how each model sees the screenshot."}
+                          {formatResultStatus(result)}
+                        </p>
                       </div>
-                    )}
-                  </div>
+
+                      <div className="flex gap-2">
+                        <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
+                          {result.modelId}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="border-b border-(--line) px-4 py-2">
+                      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
+                        <span className="text-(--muted)">
+                          Latency{" "}
+                          <span className="font-semibold text-(--foreground)">
+                            {formatDuration(result.latencyMs)}
+                          </span>
+                        </span>
+                        <span className="text-(--muted)">
+                          Runtime{" "}
+                          <span className="font-semibold text-(--foreground)">
+                            {formatDuration(liveElapsed(result, nowMs))}
+                          </span>
+                        </span>
+                        <span className="text-(--muted)">
+                          In{" "}
+                          <span className="font-semibold text-(--foreground)">
+                            {formatTokenCount(result.usage?.inputTokens)}
+                          </span>
+                        </span>
+                        <span className="text-(--muted)">
+                          Out{" "}
+                          <span className="font-semibold text-(--foreground)">
+                            {formatTokenCount(result.usage?.outputTokens)}
+                          </span>
+                        </span>
+                        {result.usage?.reasoningTokens != null ? (
+                          <span className="text-(--muted)">
+                            Reasoning{" "}
+                            <span className="font-semibold text-(--foreground)">
+                              {formatTokenCount(result.usage.reasoningTokens)}
+                            </span>
+                          </span>
+                        ) : null}
+                        {result.usage?.cacheReadTokens != null ? (
+                          <span className="text-(--muted)">
+                            Cache read{" "}
+                            <span className="font-semibold text-(--foreground)">
+                              {formatTokenCount(result.usage.cacheReadTokens)}
+                            </span>
+                          </span>
+                        ) : null}
+                        {result.usage?.cacheWriteTokens != null ? (
+                          <span className="text-(--muted)">
+                            Cache write{" "}
+                            <span className="font-semibold text-(--foreground)">
+                              {formatTokenCount(result.usage.cacheWriteTokens)}
+                            </span>
+                          </span>
+                        ) : null}
+                        <span className="text-(--muted)">
+                          Cost{" "}
+                          <span className="font-semibold text-(--foreground)">
+                            {formatCost(result.costs?.total)}
+                          </span>
+                        </span>
+                        {result.finishReason ? (
+                          <span className="text-(--muted)">
+                            Finish{" "}
+                            <span className="font-semibold text-(--foreground)">
+                              {result.finishReason}
+                            </span>
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="min-h-80 px-4 py-4">
+                      {result.text ? (
+                        outputMode === "preview" ? (
+                          <div className="space-y-3">
+                            {!hasHtml ? (
+                              <div className="rounded-[1.1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-sm text-(--muted)">
+                                No HTML tags detected yet. The live preview will
+                                become meaningful once the model starts emitting
+                                markup.
+                              </div>
+                            ) : null}
+
+                            {cardPreviewErrors.length ? (
+                              <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-3 text-sm text-(--danger)">
+                                {cardPreviewErrors.map(
+                                  (message, errorIndex) => (
+                                    <p key={`${previewId}-error-${errorIndex}`}>
+                                      {message}
+                                    </p>
+                                  ),
+                                )}
+                              </div>
+                            ) : null}
+
+                            <OutputViewport
+                              className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
+                              contentClassName="overflow-hidden"
+                              title={`${result.label} HTML preview`}
+                            >
+                              <LiveHtmlPreview
+                                isStreaming={result.status === "streaming"}
+                                markup={result.text}
+                                previewId={previewId}
+                                title={`${result.label} HTML preview`}
+                              />
+                            </OutputViewport>
+                          </div>
+                        ) : (
+                          <OutputViewport
+                            className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
+                            contentClassName="overflow-auto px-4 py-4"
+                            title={`${result.label} raw output`}
+                          >
+                            <pre className="m-0 whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
+                              {result.text}
+                            </pre>
+                          </OutputViewport>
+                        )
+                      ) : (
+                        <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-(--muted)">
+                          {isRunning
+                            ? "This panel will fill as soon as the model starts sending tokens."
+                            : "Run the harness to compare how each model sees the screenshot."}
+                        </div>
+                      )}
+                    </div>
                   </section>
                 );
               })}
