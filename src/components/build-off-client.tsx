@@ -28,6 +28,20 @@ const MAX_MODEL_CARDS = 12;
 
 type OutputMode = "preview" | "raw";
 
+/** Wrap a state mutation in a View Transition so the browser animates the DOM delta. */
+function withTransition(update: () => void) {
+  if (typeof document !== "undefined" && "startViewTransition" in document) {
+    (document as Document & { startViewTransition(fn: () => void): unknown }).startViewTransition(update);
+  } else {
+    update();
+  }
+}
+
+/** Sanitise a model ID into a valid CSS <custom-ident> for view-transition-name. */
+function cardVtName(id: string) {
+  return `card-${id.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+}
+
 function getRunImageSrc(run: SavedRun) {
   return run.imageDataUrl || run.imageUrl || "";
 }
@@ -578,7 +592,10 @@ export function BuildOffClient() {
   const [errorMessage, setErrorMessage] = useState("");
   const [modelsError, setModelsError] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
+  const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
+  const [cardSize, setCardSize] = useState<"s" | "m" | "l">("m");
+  const [dragSourceIndex, setDragSourceIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [nowMs, setNowMs] = useState(0);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
@@ -590,22 +607,11 @@ export function BuildOffClient() {
     {},
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const outputsRef = useRef<HTMLElement>(null);
   const restoredDraftRef = useRef(false);
   const pendingDraftModelIdsRef = useRef<string[] | null>(null);
   const signedInUser = sessionData?.user ?? null;
   const signedInUserId = signedInUser?.id ?? null;
 
-  function focusOutputs() {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        outputsRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        });
-      });
-    });
-  }
 
   async function loadRuns(options?: { hydrateLatest?: boolean }) {
     if (!signedInUser) {
@@ -1039,8 +1045,6 @@ export function BuildOffClient() {
     setPreviewErrors({});
     setErrorMessage("");
     setIsHistoryOpen(false);
-    setIsSetupCollapsed(true);
-    focusOutputs();
   }
 
   function handleModelChange(index: number, nextModelId: string) {
@@ -1198,10 +1202,8 @@ export function BuildOffClient() {
     setPreviewErrors({});
     setErrorMessage("");
     setIsHistoryOpen(false);
-    setIsSetupCollapsed(true);
     setIsRunning(true);
     persistRun(run);
-    focusOutputs();
 
     void (async () => {
       try {
@@ -1282,6 +1284,51 @@ export function BuildOffClient() {
   const canAddPanel =
     !isLoadingModels && selectedModels.length < maxSelectableCards;
   const canRemovePanel = selectedModels.length > minSelectableCards;
+  const isEditLocked = isRunning || results.some((r) => r.status !== "idle");
+
+  function handleDragStart(index: number) {
+    setDragSourceIndex(index);
+  }
+
+  function handleDragOver(targetIndex: number) {
+    if (dragSourceIndex !== null && dragSourceIndex !== targetIndex) {
+      setDragOverIndex(targetIndex);
+    }
+  }
+
+  function handleDrop(targetIndex: number) {
+    const src = dragSourceIndex;
+    setDragSourceIndex(null);
+    setDragOverIndex(null);
+    if (src === null || src === targetIndex) return;
+    withTransition(() => {
+      setSelectedModels((current) => {
+        const next = [...current];
+        const [removed] = next.splice(src, 1);
+        next.splice(targetIndex, 0, removed);
+        return next;
+      });
+      setResults((current) => {
+        const next = [...current];
+        const [removed] = next.splice(src, 1);
+        next.splice(targetIndex, 0, removed);
+        return next;
+      });
+    });
+  }
+
+  function handleDragEnd() {
+    setDragSourceIndex(null);
+    setDragOverIndex(null);
+  }
+
+  function handleNewRun() {
+    setResults(createEmptyResults(selectedModels));
+    setErrorMessage("");
+    setPreviewErrors({});
+    setActiveRunId(null);
+  }
+
   const comparisonRows: Array<{
     label: string;
     render: (result: ModelResult) => ReactNode;
@@ -1411,664 +1458,545 @@ export function BuildOffClient() {
     );
   }
 
+
   return (
-    <main className="relative min-h-screen [overflow-x:clip] px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+    <main className="relative min-h-screen [overflow-x:clip] pb-16 pt-4 text-(--foreground)">
       <div className="grain" />
 
-      <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
-        <header className="glass-shell floating-nav rise-in flex items-center justify-between gap-4 rounded-[3rem] px-4 py-2 sm:px-5">
-          {/* Brand */}
-          <div className="flex items-center gap-3 pl-1">
-            <h1 className="text-sm font-semibold tracking-[-0.02em]">
-              LLM Build-Off
-            </h1>
-            <span
-              aria-hidden="true"
-              className="h-3.5 w-px bg-(--foreground) opacity-20"
-            />
-            <span className="eyebrow-label hidden text-[11px] font-medium uppercase sm:block">
-              Eval Harness
-            </span>
+      {/* ── Nav ──────────────────────────────────────────────────────────── */}
+      <header className="glass-shell floating-nav rise-in mx-auto flex max-w-[1600px] items-center gap-2 rounded-[3rem] px-3 py-1.5 sm:gap-3 sm:px-4">
+        {/* Brand */}
+        <div className="flex shrink-0 items-center gap-2.5 pl-1">
+          <h1 className="text-sm font-semibold tracking-[-0.02em]">
+            LLM Build-Off
+          </h1>
+          <span
+            aria-hidden="true"
+            className="h-3.5 w-px bg-(--foreground) opacity-20"
+          />
+          <span className="eyebrow-label hidden text-[11px] font-medium uppercase sm:block">
+            Eval Harness
+          </span>
+        </div>
+
+        {/* Submenu */}
+        <div className="flex flex-1 items-center justify-center gap-0.5 overflow-x-auto">
+          <button
+            className="shrink-0 rounded-full px-3 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground)"
+            onClick={() => setIsPromptModalOpen(true)}
+            type="button"
+          >
+            Edit prompt
+          </button>
+
+          <button
+            className={cn(
+              "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+              isHistoryOpen
+                ? "bg-(--card-active) text-(--foreground)"
+                : "text-(--muted) hover:bg-(--card-active) hover:text-(--foreground)",
+            )}
+            onClick={() => {
+              const next = !isHistoryOpen;
+              setIsHistoryOpen(next);
+              if (next) void loadRuns();
+            }}
+            type="button"
+          >
+            History{runs.length ? ` (${runs.length})` : ""}
+          </button>
+
+          <span
+            aria-hidden="true"
+            className="mx-1 hidden h-4 w-px shrink-0 bg-(--foreground) opacity-15 sm:block"
+          />
+
+          {/* Card size toggle */}
+          <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
+            {(["s", "m", "l"] as const).map((size) => (
+              <button
+                key={size}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-medium transition",
+                  cardSize === size
+                    ? "bg-(--foreground) text-(--background)"
+                    : "text-(--muted) hover:bg-(--card-active)",
+                )}
+                onClick={() => withTransition(() => setCardSize(size))}
+                type="button"
+              >
+                {size.toUpperCase()}
+              </button>
+            ))}
           </div>
 
-          {/* User + action */}
-          <div className="flex items-center gap-1">
-            <div className="flex items-center gap-2 rounded-full py-1.5 pl-2 pr-3 [background:color-mix(in_oklch,var(--foreground)_7%,transparent)]">
-              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-(--accent-soft) text-[10px] font-semibold uppercase tracking-wide">
-                {getUserMonogram(signedInUser)}
-              </span>
-              <span className="hidden max-w-45 truncate text-xs font-medium sm:block">
-                {getUserDisplayName(signedInUser)}
-              </span>
-            </div>
+          <span
+            aria-hidden="true"
+            className="mx-1 hidden h-4 w-px shrink-0 bg-(--foreground) opacity-15 sm:block"
+          />
 
+          {/* Preview / Raw toggle */}
+          <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
             <button
-              className="rounded-full px-4 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={isAuthActionPending}
-              onClick={() => {
-                void handleSignOut();
-              }}
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition",
+                outputMode === "preview"
+                  ? "bg-(--foreground) text-(--background)"
+                  : "text-(--muted) hover:bg-(--card-active)",
+              )}
+              onClick={() => setOutputMode("preview")}
               type="button"
             >
-              {isAuthActionPending ? "Signing out…" : "Sign out"}
+              Preview
+            </button>
+            <button
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition",
+                outputMode === "raw"
+                  ? "bg-(--foreground) text-(--background)"
+                  : "text-(--muted) hover:bg-(--card-active)",
+              )}
+              onClick={() => setOutputMode("raw")}
+              type="button"
+            >
+              Raw
             </button>
           </div>
-        </header>
 
+          <span
+            aria-hidden="true"
+            className="mx-1 h-4 w-px shrink-0 bg-(--foreground) opacity-15"
+          />
+
+          {/* Run action */}
+          {isRunning ? (
+            <span className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-(--muted)">
+              <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-(--accent)" />
+              Running…
+            </span>
+          ) : isEditLocked ? (
+            <button
+              className="shrink-0 rounded-full bg-(--foreground) px-4 py-1.5 text-xs font-semibold text-(--background) transition hover:opacity-90"
+              onClick={handleNewRun}
+              type="button"
+            >
+              + New Run
+            </button>
+          ) : (
+            <button
+              className="shrink-0 rounded-full bg-(--accent) px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={!imageDataUrl}
+              onClick={handleCompare}
+              type="button"
+            >
+              Run ▸
+            </button>
+          )}
+        </div>
+
+        {/* User + sign out */}
+        <div className="flex shrink-0 items-center gap-1">
+          <div className="flex items-center gap-2 rounded-full py-1.5 pl-2 pr-3 [background:color-mix(in_oklch,var(--foreground)_7%,transparent)]">
+            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-(--accent-soft) text-[10px] font-semibold uppercase tracking-wide">
+              {getUserMonogram(signedInUser)}
+            </span>
+            <span className="hidden max-w-45 truncate text-xs font-medium sm:block">
+              {getUserDisplayName(signedInUser)}
+            </span>
+          </div>
+          <button
+            className="rounded-full px-4 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={isAuthActionPending}
+            onClick={() => {
+              void handleSignOut();
+            }}
+            type="button"
+          >
+            {isAuthActionPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+      </header>
+
+      {/* ── Banners ──────────────────────────────────────────────────────── */}
+      <div className="mx-auto max-w-[1600px] px-4 sm:px-0">
         {authError ? (
-          <div className="rise-in rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
+          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
             {authError}
           </div>
         ) : null}
+        {errorMessage ? (
+          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
+            {errorMessage}
+          </div>
+        ) : null}
+        {modelsError ? (
+          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
+            {modelsError}
+          </div>
+        ) : null}
+      </div>
 
-        <section className="panel rise-in rounded-[2rem] p-4 sm:p-5">
-          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
-                Reference
-              </p>
-              <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
-                Screenshot + prompt
-              </h2>
+      {/* ── History panel ────────────────────────────────────────────────── */}
+      {isHistoryOpen ? (
+        <div className="rise-in mx-auto mt-3 max-w-[1600px] overflow-hidden rounded-[1.75rem] border border-(--line) bg-(--card) p-4 px-4 sm:px-0">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold tracking-[-0.01em]">
+              Run history
+            </p>
+            <span className="text-xs text-(--muted)">
+              {isLoadingRuns ? "Refreshing…" : `${runs.length} saved`}
+            </span>
+          </div>
+          {runsError ? (
+            <div className="mb-3 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
+              {runsError}
             </div>
+          ) : null}
+          {runs.length ? (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {runs.map((run, index) => (
+                <button
+                  key={run.id}
+                  className={cn(
+                    "w-full rounded-[1.3rem] border px-4 py-3 text-left transition hover:bg-(--card-active)",
+                    activeRunId === run.id
+                      ? "border-(--foreground) bg-(--card-active)"
+                      : "border-(--line)",
+                  )}
+                  onClick={() => {
+                    hydrateRun(run);
+                    setIsHistoryOpen(false);
+                  }}
+                  type="button"
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold text-(--muted)">
+                      Run {runs.length - index}
+                    </span>
+                    <span className="text-[11px] text-(--muted)">
+                      {formatTimestamp(run.createdAt)}
+                    </span>
+                  </div>
+                  <p className="line-clamp-2 text-xs leading-5">{run.prompt}</p>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-[1.5rem] border border-dashed border-(--line) px-5 py-6 text-center text-sm text-(--muted)">
+              {isLoadingRuns ? "Loading…" : "No saved runs yet."}
+            </div>
+          )}
+        </div>
+      ) : null}
 
-            <div className="flex flex-wrap gap-2 lg:justify-end">
+      {/* ── Card grid ────────────────────────────────────────────────────── */}
+      <div
+        className="mx-auto mt-3 grid max-w-[1600px] gap-3 px-4 sm:px-0"
+        style={{
+          gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardSize === "s" ? "240px" : cardSize === "l" ? "480px" : "320px"}), 1fr))`,
+        }}
+      >
+        {/* Image card */}
+        <div className="build-card" style={{ viewTransitionName: "card-ref" }}>
+          <div className="build-card__header">
+            <span className="flex-1 text-sm font-semibold tracking-[-0.02em]">
+              Reference
+            </span>
+            {!isEditLocked ? (
               <button
-                className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
-                onClick={() => {
-                  const next = !isHistoryOpen;
-                  setIsHistoryOpen(next);
-                  if (next) {
-                    void loadRuns();
-                  }
-                }}
-                type="button"
-              >
-                {isHistoryOpen
-                  ? "Hide history"
-                  : `Run history${runs.length ? ` (${runs.length})` : ""}`}
-              </button>
-              <button
-                className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
-                onClick={() => setIsSetupCollapsed((current) => !current)}
-                type="button"
-              >
-                {isSetupCollapsed ? "Expand setup" : "Collapse setup"}
-              </button>
-              <button
-                className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
+                className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active)"
                 onClick={() => fileInputRef.current?.click()}
                 type="button"
               >
-                Upload image
+                Upload
               </button>
+            ) : null}
+          </div>
+          <div className="build-card__body">
+            {imageDataUrl ? (
+              <div className="relative aspect-[4/3] w-full overflow-hidden rounded-b-[1.75rem]">
+                <Image
+                  alt="Reference screenshot"
+                  className="object-cover"
+                  fill
+                  sizes="(max-width: 640px) 100vw, 320px"
+                  src={imageDataUrl}
+                  unoptimized
+                />
+              </div>
+            ) : (
               <button
-                className="rounded-full bg-(--foreground) px-4 py-2 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
-                disabled={isRunning}
-                onClick={handleCompare}
+                className="flex min-h-[200px] w-full flex-col items-center justify-center gap-3 rounded-b-[1.75rem] px-6 py-8 text-center transition hover:bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)]"
+                onClick={() => fileInputRef.current?.click()}
                 type="button"
               >
-                {isRunning ? "Comparing..." : "Run build-off"}
-              </button>
-            </div>
-          </div>
-
-          <div
-            className={cn(
-              "grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-              isHistoryOpen
-                ? "mb-4 grid-rows-[1fr] opacity-100"
-                : "grid-rows-[0fr] opacity-80",
-            )}
-          >
-            <div className="overflow-hidden">
-              <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
-                      Run history
-                    </p>
-                    <h3 className="mt-1 text-xl font-semibold tracking-[-0.04em]">
-                      Database-backed recent runs
-                    </h3>
-                  </div>
-                  <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
-                    {isLoadingRuns
-                      ? "Refreshing..."
-                      : `${runs.length}/${MAX_RUNS}`}
-                  </span>
-                </div>
-
-                {runsError ? (
-                  <div className="mt-3 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-                    {runsError}
-                  </div>
-                ) : null}
-
-                <div className="mt-4">
-                  {runs.length ? (
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {runs.map((run, index) => (
-                        <button
-                          key={run.id}
-                          className={cn(
-                            "w-full rounded-[1.3rem] border px-4 py-4 text-left transition hover:-translate-y-0.5 hover:bg-(--card-active)",
-                            activeRunId === run.id
-                              ? "border-(--foreground) bg-(--card-active)"
-                              : "border-(--line) bg-(--card)",
-                          )}
-                          onClick={() => hydrateRun(run)}
-                          type="button"
-                        >
-                          <div className="mb-3 flex items-center justify-between gap-4">
-                            <span className="text-sm font-semibold text-(--muted)">
-                              Run {runs.length - index}
-                            </span>
-                            <span className="text-xs text-(--muted)">
-                              {formatTimestamp(run.createdAt)}
-                            </span>
-                          </div>
-                          <p className="line-clamp-2 text-sm leading-6">
-                            {run.prompt}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-[1.5rem] border border-dashed border-(--line) px-5 py-8 text-sm leading-6 text-(--muted)">
-                      {isLoadingRuns
-                        ? "Loading saved runs from the database."
-                        : "Saved runs from the database will appear here."}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {isSetupCollapsed ? (
-            <button
-              className="mb-4 w-full rounded-[1.5rem] border border-(--line) bg-[color-mix(in_oklch,var(--accent-soft)_50%,var(--card))] px-4 py-4 text-left transition hover:bg-[color-mix(in_oklch,var(--accent-soft)_65%,var(--card))]"
-              onClick={() => setIsSetupCollapsed(false)}
-              type="button"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-(--muted)">
-                    Setup collapsed
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-(--foreground)">
-                    {summarizePrompt(prompt)}
-                  </p>
-                </div>
-                <span className="rounded-full border border-(--line) bg-(--card) px-3 py-1 text-xs font-medium text-(--muted)">
-                  {selectedModels.length} models · {imageName}
+                <span className="text-2xl opacity-25">↑</span>
+                <span className="text-sm leading-6 text-(--muted)">
+                  Paste a screenshot, or click to upload
                 </span>
-              </div>
-            </button>
-          ) : null}
-
-          <div
-            className={cn(
-              "grid transition-[grid-template-rows,opacity] duration-400 ease-[cubic-bezier(0.22,1,0.36,1)]",
-              isSetupCollapsed
-                ? "grid-rows-[0fr] overflow-hidden opacity-70"
-                : "grid-rows-[1fr] opacity-100",
+              </button>
             )}
-          >
-            <div className="min-h-0">
-              <input
-                ref={fileInputRef}
-                accept="image/*"
-                className="hidden"
-                onChange={handleFileChange}
-                type="file"
-              />
-
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.18fr)_minmax(320px,0.82fr)]">
-                <div className="overflow-hidden rounded-[1.7rem] border border-(--line) bg-(--panel-strong)">
-                  {imageDataUrl ? (
-                    <div className="relative aspect-[16/10] h-full w-full">
-                      <Image
-                        alt="Reference upload"
-                        className="object-cover"
-                        fill
-                        sizes="(max-width: 1024px) 100vw, 58vw"
-                        src={imageDataUrl}
-                        unoptimized
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex aspect-[16/10] items-center justify-center p-8 text-center text-sm text-(--muted)">
-                      Paste any screenshot from your clipboard, or upload one
-                      here.
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-3">
-                  <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
-                    <p className="text-sm font-medium text-(--muted)">Image</p>
-                    <p className="mt-1 truncate text-lg font-semibold">
-                      {imageName}
-                    </p>
-                  </div>
-
-                  <label className="flex flex-1 flex-col rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
-                    <span className="mb-3 text-sm font-medium text-(--muted)">
-                      Prompt
-                    </span>
-                    <textarea
-                      className="min-h-48 flex-1 resize-none bg-transparent text-sm leading-6 outline-none"
-                      onChange={(event) => setPrompt(event.target.value)}
-                      placeholder="Tell the models what kind of build guidance you want."
-                      value={prompt}
-                    />
-                  </label>
-
-                  {errorMessage ? (
-                    <div className="rounded-[1.25rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-                      {errorMessage}
-                    </div>
-                  ) : null}
-
-                  <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-(--line) pb-3">
-                      <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
-                          Lineup
-                        </p>
-                        <h3 className="mt-1 text-xl font-semibold tracking-[-0.04em]">
-                          Models
-                        </h3>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center overflow-hidden rounded-full border border-(--line) bg-(--card)">
-                          <button
-                            className="px-3 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
-                            disabled={!canRemovePanel || isRunning}
-                            onClick={() =>
-                              handleTargetPanelCount(selectedModels.length - 1)
-                            }
-                            type="button"
-                          >
-                            -
-                          </button>
-                          <span className="min-w-16 px-3 text-center text-sm font-medium text-(--muted)">
-                            {selectedModels.length}
-                          </span>
-                          <button
-                            className="px-3 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
-                            disabled={!canAddPanel || isRunning}
-                            onClick={() =>
-                              handleTargetPanelCount(selectedModels.length + 1)
-                            }
-                            type="button"
-                          >
-                            +
-                          </button>
-                        </div>
-
-                        <span className="rounded-full border border-(--line) px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-(--muted)">
-                          2-12
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="mt-3 text-sm leading-6 text-(--muted)">
-                      Keep the matchup tight with a smaller list of
-                      vision-capable models.
-                    </p>
-
-                    {modelsError ? (
-                      <div className="mt-3 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-                        {modelsError}
-                      </div>
-                    ) : null}
-
-                    <div className="mt-4 space-y-2">
-                      {selectedModels.map((model, index) => {
-                        const selectedCatalogModel =
-                          catalog.find((entry) => entry.id === model.id) ??
-                          null;
-
-                        return (
-                          <div
-                            key={`${model.id}-${index}`}
-                            className="rounded-[1.25rem] border border-(--line) bg-(--card) p-3"
-                          >
-                            <div className="mb-2 flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                                  Panel {index + 1}
-                                </p>
-                                <p className="mt-1 truncate text-sm font-medium">
-                                  {model.label}
-                                </p>
-                              </div>
-
-                              <button
-                                className="rounded-full border border-(--line) px-2.5 py-1 text-[11px] font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
-                                disabled={!canRemovePanel || isRunning}
-                                onClick={() => handleRemovePanel(index)}
-                                type="button"
-                              >
-                                Remove
-                              </button>
-                            </div>
-
-                            <ModelPicker
-                              catalog={catalog}
-                              disabled={isLoadingModels || isRunning}
-                              index={index}
-                              onSelect={(modelId) =>
-                                handleModelChange(index, modelId)
-                              }
-                              selectedModels={selectedModels}
-                              value={model}
-                            />
-
-                            {selectedCatalogModel ? (
-                              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--muted)">
-                                <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  {selectedCatalogModel.ownedBy}
-                                </span>
-                                <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  {formatMonthYear(
-                                    selectedCatalogModel.releasedAt,
-                                  )}
-                                </span>
-                                <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  in{" "}
-                                  {formatRatePerMillion(
-                                    selectedCatalogModel.pricing.input,
-                                  )}
-                                  /1M
-                                </span>
-                                <span className="rounded-full border border-(--line) px-2.5 py-1">
-                                  out{" "}
-                                  {formatRatePerMillion(
-                                    selectedCatalogModel.pricing.output,
-                                  )}
-                                  /1M
-                                </span>
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
-        </section>
-
-        <section className="grid gap-5 md:grid-cols-2">
-          <article
-            className="panel rise-in scroll-mt-6 rounded-[2rem] p-4 sm:p-5 md:col-span-2"
-            ref={outputsRef}
-          >
-            <div className="mb-4 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
-                  Live outputs
-                </p>
-                <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
-                  Streaming model responses
-                </h2>
-              </div>
-              <div className="flex items-center gap-2 rounded-full border border-(--line) px-3 py-2 text-sm text-(--muted)">
-                <span className="pulse-dot h-2.5 w-2.5 rounded-full bg-(--accent)" />
-                updates in real time
-              </div>
+          {imageDataUrl ? (
+            <div className="build-card__footer">
+              <span className="truncate">{imageName}</span>
             </div>
+          ) : null}
+        </div>
 
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-(--line) bg-(--card) px-4 py-3">
-              <p className="text-sm leading-6 text-(--muted)">
-                Preview mode renders the streamed HTML artifact live. Raw mode
-                shows the exact model output.
-              </p>
+        {/* Model cards */}
+        {selectedModels.map((model, index) => {
+          const result = results[index];
+          const previewId = `${model.id}-${index}`;
+          const cardPreviewErrors = previewErrors[previewId] ?? [];
+          const hasHtml = looksLikeHtml(result?.text ?? "");
+          const isDragged = dragSourceIndex === index;
+          const isDragTarget =
+            dragOverIndex === index && dragSourceIndex !== index;
 
-              <div className="flex items-center overflow-hidden rounded-full border border-(--line) bg-(--card)">
-                <button
-                  className={cn(
-                    "px-4 py-2 text-sm font-medium transition",
-                    outputMode === "preview"
-                      ? "bg-(--foreground) text-(--background)"
-                      : "text-(--muted) hover:bg-(--card-active)",
-                  )}
-                  onClick={() => setOutputMode("preview")}
-                  type="button"
-                >
-                  HTML preview
-                </button>
-                <button
-                  className={cn(
-                    "px-4 py-2 text-sm font-medium transition",
-                    outputMode === "raw"
-                      ? "bg-(--foreground) text-(--background)"
-                      : "text-(--muted) hover:bg-(--card-active)",
-                  )}
-                  onClick={() => setOutputMode("raw")}
-                  type="button"
-                >
-                  Raw output
-                </button>
-              </div>
-            </div>
-            {/* 
-            <div className="mb-4 overflow-hidden rounded-[1.35rem] border border-(--line) bg-(--card)">
-              <div className="overflow-x-auto">
-                <table className="min-w-full border-separate border-spacing-0 text-sm">
-                  <thead>
-                    <tr>
-                      <th className="sticky left-0 z-10 border-b border-(--line) bg-(--panel-strong) px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                        Compare
-                      </th>
-                      {results.map((result, index) => (
-                        <th
-                          className="min-w-44 border-b border-(--line) px-4 py-3 text-left align-top"
-                          key={`${result.modelId}-${index}-compare-heading`}
-                        >
-                          <p className="text-sm font-semibold">{result.label}</p>
-                          <p className="mt-1 text-xs text-(--muted)">{result.modelId}</p>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {comparisonRows.map((row) => (
-                      <tr key={row.label}>
-                        <th className="sticky left-0 z-10 border-b border-(--line) bg-(--panel) px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                          {row.label}
-                        </th>
-                        {results.map((result, index) => (
-                          <td
-                            className="border-b border-(--line) px-4 py-3 align-top text-(--foreground)"
-                            key={`${result.modelId}-${index}-${row.label}`}
-                          >
-                            {row.render(result)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div> */}
-
+          return (
             <div
-              className="grid gap-4"
-              style={{
-                gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+              key={`${model.id}-${index}`}
+              className={cn(
+                "build-card",
+                isDragged && "build-card--drag-source",
+                isDragTarget && "build-card--drag-target",
+              )}
+              style={{ viewTransitionName: cardVtName(model.id) }}
+              draggable={!isEditLocked}
+              onDragEnd={handleDragEnd}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!isEditLocked) handleDragOver(index);
+              }}
+              onDragStart={() => {
+                if (!isEditLocked) handleDragStart(index);
+              }}
+              onDrop={() => {
+                if (!isEditLocked) handleDrop(index);
               }}
             >
-              {results.map((result, index) => {
-                const previewId = `${result.modelId}-${index}`;
-                const cardPreviewErrors = previewErrors[previewId] ?? [];
-                const hasHtml = looksLikeHtml(result.text);
-
-                return (
-                  <section
-                    key={previewId}
-                    className="overflow-hidden rounded-[1.7rem] border border-(--line) bg-(--card)"
-                    style={{ animationDelay: `${index * 70}ms` }}
+              {/* Card header */}
+              <div className="build-card__header">
+                {!isEditLocked ? (
+                  <span
+                    aria-hidden="true"
+                    className="build-card__drag"
+                    title="Drag to reorder"
                   >
-                    <div className="flex items-center justify-between border-b border-(--line) px-4 py-4">
-                      <div>
-                        <h3 className="text-xl font-semibold tracking-[-0.04em]">
-                          {result.label}
-                        </h3>
-                        <p
-                          className={cn(
-                            "mt-1 text-sm font-medium",
-                            statusTone(result.status),
-                          )}
-                        >
-                          {formatResultStatus(result)}
-                        </p>
-                      </div>
+                    ⠿
+                  </span>
+                ) : null}
+                <span className="flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
+                  {model.label}
+                </span>
+                <span
+                  className={cn(
+                    "shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em]",
+                    result?.status === "done" &&
+                      "border-[color-mix(in_oklch,var(--success)_35%,transparent)] text-(--success)",
+                    result?.status === "streaming" &&
+                      "border-[color-mix(in_oklch,var(--accent)_38%,transparent)] text-(--accent)",
+                    result?.status === "error" &&
+                      "border-[color-mix(in_oklch,var(--danger)_38%,transparent)] text-(--danger)",
+                    (!result || result.status === "idle") &&
+                      "border-(--line) text-(--muted)",
+                  )}
+                >
+                  {formatResultStatus(result)}
+                </span>
+                {!isEditLocked && canRemovePanel ? (
+                  <button
+                    aria-label={`Remove ${model.label}`}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-lg leading-none text-(--muted) transition hover:bg-(--card-active) hover:text-(--foreground)"
+                    onClick={() => withTransition(() => handleRemovePanel(index))}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                ) : null}
+              </div>
 
-                      <div className="flex gap-2">
-                        <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
-                          {result.modelId}
-                        </span>
-                      </div>
-                    </div>
+              {/* Inline model picker — only when editable */}
+              {!isEditLocked ? (
+                <div className="border-b border-(--line) p-3">
+                  <ModelPicker
+                    catalog={catalog}
+                    disabled={isLoadingModels}
+                    index={index}
+                    onSelect={(modelId) => handleModelChange(index, modelId)}
+                    selectedModels={selectedModels}
+                    value={model}
+                  />
+                </div>
+              ) : null}
 
-                    <div className="border-b border-(--line) px-4 py-2">
-                      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
-                        <span className="text-(--muted)">
-                          Latency{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatDuration(result.latencyMs)}
-                          </span>
-                        </span>
-                        <span className="text-(--muted)">
-                          Runtime{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatDuration(liveElapsed(result, nowMs))}
-                          </span>
-                        </span>
-                        <span className="text-(--muted)">
-                          In{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatTokenCount(result.usage?.inputTokens)}
-                          </span>
-                        </span>
-                        <span className="text-(--muted)">
-                          Out{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatTokenCount(result.usage?.outputTokens)}
-                          </span>
-                        </span>
-                        {result.usage?.reasoningTokens != null ? (
-                          <span className="text-(--muted)">
-                            Reasoning{" "}
-                            <span className="font-semibold text-(--foreground)">
-                              {formatTokenCount(result.usage.reasoningTokens)}
-                            </span>
-                          </span>
-                        ) : null}
-                        {result.usage?.cacheReadTokens != null ? (
-                          <span className="text-(--muted)">
-                            Cache read{" "}
-                            <span className="font-semibold text-(--foreground)">
-                              {formatTokenCount(result.usage.cacheReadTokens)}
-                            </span>
-                          </span>
-                        ) : null}
-                        {result.usage?.cacheWriteTokens != null ? (
-                          <span className="text-(--muted)">
-                            Cache write{" "}
-                            <span className="font-semibold text-(--foreground)">
-                              {formatTokenCount(result.usage.cacheWriteTokens)}
-                            </span>
-                          </span>
-                        ) : null}
-                        <span className="text-(--muted)">
-                          Cost{" "}
-                          <span className="font-semibold text-(--foreground)">
-                            {formatCost(result.costs?.total)}
-                          </span>
-                        </span>
-                        {result.finishReason ? (
-                          <span className="text-(--muted)">
-                            Finish{" "}
-                            <span className="font-semibold text-(--foreground)">
-                              {result.finishReason}
-                            </span>
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="min-h-80 px-4 py-4">
-                      {result.text ? (
-                        outputMode === "preview" ? (
-                          <div className="space-y-3">
-                            {!hasHtml ? (
-                              <div className="rounded-[1.1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-sm text-(--muted)">
-                                No HTML tags detected yet. The live preview will
-                                become meaningful once the model starts emitting
-                                markup.
-                              </div>
-                            ) : null}
-
-                            {cardPreviewErrors.length ? (
-                              <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-3 text-sm text-(--danger)">
-                                {cardPreviewErrors.map(
-                                  (message, errorIndex) => (
-                                    <p key={`${previewId}-error-${errorIndex}`}>
-                                      {message}
-                                    </p>
-                                  ),
-                                )}
-                              </div>
-                            ) : null}
-
-                            <OutputViewport
-                              className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
-                              contentClassName="overflow-hidden"
-                              title={`${result.label} HTML preview`}
-                            >
-                              <LiveHtmlPreview
-                                isStreaming={result.status === "streaming"}
-                                markup={result.text}
-                                previewId={previewId}
-                                title={`${result.label} HTML preview`}
-                              />
-                            </OutputViewport>
-                          </div>
-                        ) : (
-                          <OutputViewport
-                            className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
-                            contentClassName="overflow-auto px-4 py-4"
-                            title={`${result.label} raw output`}
-                          >
-                            <pre className="m-0 whitespace-pre-wrap break-words font-[450] leading-7 text-[15px]">
-                              {result.text}
-                            </pre>
-                          </OutputViewport>
-                        )
-                      ) : (
-                        <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-(--muted)">
-                          {isRunning
-                            ? "This panel will fill as soon as the model starts sending tokens."
-                            : "Run the harness to compare how each model sees the screenshot."}
+              {/* Result content */}
+              <div className="build-card__body">
+                {result?.text ? (
+                  outputMode === "preview" ? (
+                    <div className="flex flex-col gap-2 p-3">
+                      {!hasHtml ? (
+                        <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-xs text-(--muted)">
+                          No HTML yet — preview appears as markup arrives.
                         </div>
-                      )}
+                      ) : null}
+                      {cardPreviewErrors.length ? (
+                        <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
+                          {cardPreviewErrors.map((msg, i) => (
+                            <p key={`${previewId}-err-${i}`}>{msg}</p>
+                          ))}
+                        </div>
+                      ) : null}
+                      <OutputViewport
+                        className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
+                        contentClassName="overflow-hidden"
+                        title={`${result.label} preview`}
+                      >
+                        <LiveHtmlPreview
+                          isStreaming={result.status === "streaming"}
+                          markup={result.text}
+                          previewId={previewId}
+                          title={`${result.label} preview`}
+                        />
+                      </OutputViewport>
                     </div>
-                  </section>
-                );
-              })}
+                  ) : (
+                    <div className="p-3">
+                      <OutputViewport
+                        className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
+                        contentClassName="overflow-auto px-4 py-4"
+                        title={`${result.label} raw`}
+                      >
+                        <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7">
+                          {result.text}
+                        </pre>
+                      </OutputViewport>
+                    </div>
+                  )
+                ) : (
+                  <div className="flex min-h-[160px] flex-1 items-center justify-center px-6 py-8 text-center text-sm leading-6 text-(--muted)">
+                    {isRunning
+                      ? "Waiting for tokens…"
+                      : isEditLocked
+                        ? "No output."
+                        : "Run to see output here."}
+                  </div>
+                )}
+              </div>
+
+              {/* Metrics footer — appears after run starts */}
+              {result && result.status !== "idle" ? (
+                <div className="build-card__footer">
+                  <span>
+                    Latency{" "}
+                    <strong className="font-semibold text-(--foreground)">
+                      {formatDuration(result.latencyMs)}
+                    </strong>
+                  </span>
+                  <span>
+                    Runtime{" "}
+                    <strong className="font-semibold text-(--foreground)">
+                      {formatDuration(liveElapsed(result, nowMs))}
+                    </strong>
+                  </span>
+                  {result.usage?.inputTokens != null ? (
+                    <span>
+                      In{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokenCount(result.usage.inputTokens)}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {result.usage?.outputTokens != null ? (
+                    <span>
+                      Out{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokenCount(result.usage.outputTokens)}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {result.costs?.total != null ? (
+                    <span>
+                      Cost{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatCost(result.costs.total)}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {result.finishReason ? (
+                    <span>
+                      Finish{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {result.finishReason}
+                      </strong>
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
-          </article>
-        </section>
-      </section>
+          );
+        })}
+
+        {/* Ghost "add" card */}
+        {!isEditLocked && canAddPanel ? (
+          <button
+            className="ghost-card"
+            style={{ viewTransitionName: "card-add" }}
+            onClick={() => withTransition(() => handleTargetPanelCount(selectedModels.length + 1))}
+            type="button"
+          >
+            <span className="ghost-card__plus">+</span>
+          </button>
+        ) : null}
+      </div>
+
+      {/* ── Prompt modal ─────────────────────────────────────────────────── */}
+      {isPromptModalOpen ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => setIsPromptModalOpen(false)}
+        >
+          <div
+            className="modal-sheet"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-(--line) px-6 py-4">
+              <h2 className="text-sm font-semibold tracking-[-0.02em]">
+                Edit prompt
+              </h2>
+              <button
+                className="rounded-full bg-(--foreground) px-4 py-1.5 text-xs font-semibold text-(--background) transition hover:opacity-90"
+                onClick={() => setIsPromptModalOpen(false)}
+                type="button"
+              >
+                Done
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-6">
+              <textarea
+                className="min-h-80 w-full resize-none bg-transparent text-sm leading-7 text-(--foreground) outline-none"
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="Tell the models what kind of build guidance you want."
+                value={prompt}
+              />
+            </div>
+            <div className="shrink-0 border-t border-(--line) px-6 py-3">
+              <p className="text-xs text-(--muted)">
+                {prompt.length.toLocaleString()} characters
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <input
+        ref={fileInputRef}
+        accept="image/*"
+        className="hidden"
+        onChange={handleFileChange}
+        type="file"
+      />
     </main>
   );
 }

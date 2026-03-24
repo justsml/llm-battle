@@ -181,6 +181,209 @@ textarea {
   }
 }
 
+/* ─── View Transitions ───────────────────────────────────────────────────── */
+
+/* Suppress the default full-page crossfade — only per-card animations should play */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+/* All named groups use the spring easing */
+::view-transition-group(*) {
+  animation-duration: 380ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Entering: slide + fade up — applies to all named elements */
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(10px);
+  }
+}
+
+/* Exiting: fade + scale down */
+@keyframes card-exit {
+  to {
+    opacity: 0;
+    transform: scale(0.94) translateY(-6px);
+  }
+}
+
+/* Default for every named element (root is overridden to `none` above) */
+::view-transition-new(*) {
+  animation: card-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+::view-transition-old(*) {
+  animation: card-exit 200ms cubic-bezier(0.25, 0, 0, 1) both;
+}
+
+/* ─── Build Card ─────────────────────────────────────────────────────────── */
+.build-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  border-radius: 1.75rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 7%, transparent),
+    0 2px 12px -2px color-mix(in oklch, black 18%, transparent);
+  transition:
+    box-shadow 220ms cubic-bezier(0.25, 0, 0, 1),
+    border-color 220ms cubic-bezier(0.25, 0, 0, 1),
+    opacity 220ms cubic-bezier(0.25, 0, 0, 1),
+    transform 220ms cubic-bezier(0.25, 0, 0, 1);
+}
+
+.build-card--drag-source {
+  opacity: 0.35;
+  transform: scale(0.972);
+}
+
+.build-card--drag-target {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 7%, transparent),
+    0 0 0 3px color-mix(in oklch, var(--accent) 28%, transparent),
+    0 2px 12px -2px color-mix(in oklch, black 18%, transparent);
+}
+
+.build-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 1rem;
+  height: 3.25rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.build-card__drag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  color: color-mix(in oklch, var(--foreground) 20%, transparent);
+  cursor: grab;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  border-radius: 0.5rem;
+  user-select: none;
+  flex-shrink: 0;
+  transition: color 150ms;
+}
+
+.build-card__drag:hover {
+  color: color-mix(in oklch, var(--foreground) 50%, transparent);
+}
+
+.build-card__drag:active {
+  cursor: grabbing;
+}
+
+.build-card__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 0 0 1.75rem 1.75rem;
+}
+
+.build-card__footer {
+  border-top: 1px solid var(--line);
+  padding: 0.5rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.6875rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* ─── Ghost / Add Card ────────────────────────────────────────────────────── */
+.ghost-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  border-radius: 1.75rem;
+  border: 1.5px dashed color-mix(in oklch, var(--foreground) 13%, transparent);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease;
+}
+
+.ghost-card:hover {
+  background: color-mix(in oklch, var(--foreground) 4%, transparent);
+  border-color: color-mix(in oklch, var(--foreground) 26%, transparent);
+}
+
+.ghost-card__plus {
+  font-size: 2.75rem;
+  font-weight: 200;
+  line-height: 1;
+  color: color-mix(in oklch, var(--foreground) 18%, transparent);
+  transition:
+    color 180ms ease,
+    transform 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ghost-card:hover .ghost-card__plus {
+  color: color-mix(in oklch, var(--foreground) 40%, transparent);
+  transform: scale(1.16);
+}
+
+/* ─── Prompt Modal ────────────────────────────────────────────────────────── */
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-sheet-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(12px);
+  }
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: color-mix(in oklch, black 55%, transparent);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  animation: modal-backdrop-in 200ms ease-out;
+}
+
+.modal-sheet {
+  width: 100%;
+  max-width: 700px;
+  max-height: min(82vh, 740px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 2rem;
+  background: var(--panel-strong);
+  border: 1px solid color-mix(in oklch, white 16%, var(--line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+    0 40px 100px -10px color-mix(in oklch, black 68%, transparent);
+  overflow: hidden;
+  animation: modal-sheet-in 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
