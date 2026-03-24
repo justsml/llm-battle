@@ -1164,7 +1164,7 @@ export function BuildOffClient() {
 
   if (isSessionPending) {
     return (
-      <main className="relative min-h-screen overflow-x-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+      <main className="relative min-h-screen [overflow-x:clip] px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
 
         <section className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center">
@@ -1184,7 +1184,7 @@ export function BuildOffClient() {
 
   if (!signedInUser) {
     return (
-      <main className="relative min-h-screen overflow-x-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+      <main className="relative min-h-screen [overflow-x:clip] px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
 
         <section className="mx-auto flex w-full max-w-5xl flex-col gap-5">
@@ -1240,7 +1240,7 @@ export function BuildOffClient() {
   }
 
   return (
-    <main className="relative min-h-screen overflow-x-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
+    <main className="relative min-h-screen [overflow-x:clip] px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
       <div className="grain" />
 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
