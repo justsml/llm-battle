@@ -79,13 +79,13 @@ function formatMonthYear(value?: string) {
 function statusTone(status: ModelResult["status"]) {
   switch (status) {
     case "streaming":
-      return "text-[var(--accent)]";
+      return "text-(--accent)";
     case "done":
-      return "text-[var(--success)]";
+      return "text-(--success)";
     case "error":
-      return "text-[var(--danger)]";
+      return "text-(--danger)";
     default:
-      return "text-[var(--muted)]";
+      return "text-(--muted)";
   }
 }
 
@@ -345,7 +345,7 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
   return (
     <div className="relative" ref={rootRef}>
       <button
-        className="w-full rounded-[1rem] border border-[var(--line)] bg-[var(--panel)] px-3 py-3 text-left transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-[1rem] border border-(--line) bg-(--panel) px-3 py-3 text-left transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-60"
         disabled={disabled}
         onClick={() =>
           setIsOpen((current) => {
@@ -357,17 +357,17 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
         type="button"
       >
         <span className="block text-sm font-medium">{selectedCatalogModel?.name ?? value.label}</span>
-        <span className="mt-1 block truncate text-xs text-[var(--muted)]">
+        <span className="mt-1 block truncate text-xs text-(--muted)">
           {selectedCatalogModel?.ownedBy ?? "Unknown provider"} · {value.id}
         </span>
       </button>
 
       {isOpen ? (
-        <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--panel)_94%,white)] shadow-[0_20px_60px_color-mix(in_oklch,var(--foreground)_15%,transparent)] backdrop-blur-xl">
-          <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[color:color-mix(in_oklch,var(--panel)_96%,white)] p-3">
+        <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--panel) shadow-[0_20px_60px_color-mix(in_oklch,var(--foreground)_15%,transparent)] backdrop-blur-xl">
+          <div className="sticky top-0 z-10 border-b border-(--line) bg-(--panel-strong) p-3">
             <input
               ref={searchRef}
-              className="w-full rounded-[0.9rem] border border-[var(--line)] bg-white/90 px-3 py-2 text-sm outline-none transition focus:border-[var(--foreground)]"
+              className="w-full rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 text-sm outline-none transition focus:border-(--foreground)"
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Filter by name, provider, id, or tag"
               value={query}
@@ -378,7 +378,7 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
             {Object.keys(filteredGroups).length ? (
               Object.entries(filteredGroups).map(([provider, models]) => (
                 <div className="mb-2 last:mb-0" key={provider}>
-                  <p className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
+                  <p className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                     {provider}
                   </p>
                   <div className="space-y-1">
@@ -388,8 +388,8 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
                           className={cn(
                             "w-full rounded-[1rem] border px-3 py-2 text-left transition",
                             entry.id === value.id
-                              ? "border-[var(--foreground)] bg-white"
-                              : "border-[var(--line)] bg-[var(--card)] hover:bg-[var(--card-active)]",
+                              ? "border-(--foreground) bg-(--card-active)"
+                              : "border-(--line) bg-(--card) hover:bg-(--card-active)",
                           )}
                           key={entry.id}
                           onClick={() => {
@@ -402,12 +402,12 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
                           <span className="flex items-start justify-between gap-3">
                             <span className="block min-w-0">
                               <span className="block text-sm font-medium">{entry.name}</span>
-                              <span className="mt-1 block text-xs text-[var(--muted)]">
+                              <span className="mt-1 block text-xs text-(--muted)">
                                 {entry.id}
 
                               </span>
                             </span>
-                            <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">
+                            <span className="shrink-0 rounded-full border border-(--line) px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)">
                               {formatMonthYear(entry.releasedAt)}
                             </span>
                           </span>
@@ -418,7 +418,7 @@ function ModelPicker({ index, value, catalog, disabled, selectedModels, onSelect
                 </div>
               ))
             ) : (
-              <div className="px-3 py-8 text-center text-sm text-[var(--muted)]">
+              <div className="px-3 py-8 text-center text-sm text-(--muted)">
                 No models matched that filter.
               </div>
             )}
@@ -490,7 +490,7 @@ function OutputViewport({ title, children, className, contentClassName }: Output
     <div className={cn("output-viewport relative", className)} ref={viewportRef}>
       <button
         aria-label={`${isFullscreen ? "Exit" : "Open"} ${title} full screen`}
-        className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-[var(--card-active)]"
+        className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-(--line) bg-(--card) px-3 py-1.5 text-xs font-medium text-(--foreground) shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-(--card-active)"
         onClick={() => {
           void toggleFullscreen();
         }}
@@ -1141,12 +1141,12 @@ export function BuildOffClient() {
           className={cn(
             "inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]",
             result.status === "done" &&
-              "border-[color:color-mix(in_oklch,var(--success)_26%,white)] bg-[color:color-mix(in_oklch,var(--success)_12%,white)] text-[var(--success)]",
+              "border-[color-mix(in_oklch,var(--success)_35%,transparent)] bg-[color-mix(in_oklch,var(--success)_18%,transparent)] text-(--success)",
             result.status === "streaming" &&
-              "border-[color:color-mix(in_oklch,var(--accent)_28%,white)] bg-[color:color-mix(in_oklch,var(--accent)_12%,white)] text-[var(--accent)]",
+              "border-[color-mix(in_oklch,var(--accent)_38%,transparent)] bg-[color-mix(in_oklch,var(--accent)_18%,transparent)] text-(--accent)",
             result.status === "error" &&
-              "border-[color:color-mix(in_oklch,var(--danger)_28%,white)] bg-[color:color-mix(in_oklch,var(--danger)_12%,white)] text-[var(--danger)]",
-            result.status === "idle" && "border-[var(--line)] bg-[var(--card)] text-[var(--muted)]",
+              "border-[color-mix(in_oklch,var(--danger)_38%,transparent)] bg-[color-mix(in_oklch,var(--danger)_18%,transparent)] text-(--danger)",
+            result.status === "idle" && "border-(--line) bg-(--card) text-(--muted)",
           )}
         >
           {formatResultStatus(result)}
@@ -1164,16 +1164,16 @@ export function BuildOffClient() {
 
   if (isSessionPending) {
     return (
-      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
+      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
 
         <section className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center">
           <div className="panel rise-in w-full rounded-[2rem] p-8 text-center sm:p-10">
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-(--muted)">
               Visual Eval Harness
             </p>
             <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em]">Checking your session</h1>
-            <p className="mt-3 text-sm text-[var(--muted)]">
+            <p className="mt-3 text-sm text-(--muted)">
               Loading Better Auth so we can restore your saved build-off workspace.
             </p>
           </div>
@@ -1184,18 +1184,18 @@ export function BuildOffClient() {
 
   if (!signedInUser) {
     return (
-      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
+      <main className="relative min-h-screen overflow-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
 
         <section className="mx-auto flex w-full max-w-5xl flex-col gap-5">
           <header className="rise-in rounded-[2rem] border border-white/40 bg-white/30 px-5 py-5 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-6">
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-(--muted)">
               Visual Eval Harness
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
               Sign in to save and compare build-off runs
             </h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)] sm:text-base">
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-(--muted) sm:text-base">
               GitHub OAuth is now wired through Better Auth. Once you sign in, run history stays tied
               to your account instead of mixing together across the whole app.
             </p>
@@ -1204,20 +1204,20 @@ export function BuildOffClient() {
           <section className="panel rise-in rounded-[2rem] p-6 sm:p-8">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
               <div className="max-w-2xl">
-                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                   Authentication
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
                   Continue with GitHub
                 </h2>
-                <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                <p className="mt-3 text-sm leading-6 text-(--muted)">
                   Your local draft still stays in the browser, but database-backed runs and new
                   comparisons are only available after sign-in.
                 </p>
               </div>
 
               <button
-                className="rounded-full bg-[var(--foreground)] px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
+                className="rounded-full bg-(--foreground) px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
                 disabled={isAuthActionPending}
                 onClick={() => {
                   void handleGitHubSignIn();
@@ -1229,7 +1229,7 @@ export function BuildOffClient() {
             </div>
 
             {authError ? (
-              <div className="mt-4 rounded-[1.1rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+              <div className="mt-4 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
                 {authError}
               </div>
             ) : null}
@@ -1240,33 +1240,33 @@ export function BuildOffClient() {
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden px-4 py-6 text-[var(--foreground)] sm:px-6 lg:px-8">
+    <main className="relative min-h-screen overflow-hidden px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
       <div className="grain" />
 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-5">
         <header className="rise-in flex flex-col gap-4 rounded-[2rem] border border-white/40 bg-white/30 px-5 py-4 shadow-[0_8px_32px_color-mix(in_oklch,var(--foreground)_8%,transparent)] backdrop-blur-xl backdrop-saturate-150 sm:px-7 sm:py-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--muted)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-(--muted)">
               Visual Eval Harness
             </p>
             <h1 className="mt-2 text-2xl font-semibold tracking-[-0.05em]">LLM Build-Off</h1>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="inline-flex items-center gap-3 rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--foreground)]">
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-semibold uppercase tracking-[0.18em] text-[var(--foreground)]">
+            <div className="inline-flex items-center gap-3 rounded-full border border-(--line) bg-(--card) px-3 py-2 text-sm text-(--foreground)">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-(--accent-soft) text-xs font-semibold uppercase tracking-[0.18em] text-(--foreground)">
                 {getUserMonogram(signedInUser)}
               </span>
               <span className="min-w-0">
                 <span className="block truncate font-medium">{getUserDisplayName(signedInUser)}</span>
-                <span className="block truncate text-xs text-[var(--muted)]">
+                <span className="block truncate text-xs text-(--muted)">
                   {signedInUser.email}
                 </span>
               </span>
             </div>
 
             <button
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-55"
+              className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-55"
               disabled={isAuthActionPending}
               onClick={() => {
                 void handleSignOut();
@@ -1279,7 +1279,7 @@ export function BuildOffClient() {
         </header>
 
         {authError ? (
-          <div className="rise-in rounded-[1.4rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+          <div className="rise-in rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
             {authError}
           </div>
         ) : null}
@@ -1287,7 +1287,7 @@ export function BuildOffClient() {
         <section className="panel rise-in rounded-[2rem] p-4 sm:p-5">
           <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                 Reference
               </p>
               <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">Screenshot + prompt</h2>
@@ -1295,7 +1295,7 @@ export function BuildOffClient() {
 
             <div className="flex flex-wrap gap-2 lg:justify-end">
               <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]"
+                className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
                 onClick={() => {
                   const next = !isHistoryOpen;
                   setIsHistoryOpen(next);
@@ -1308,21 +1308,21 @@ export function BuildOffClient() {
                 {isHistoryOpen ? "Hide history" : `Run history${runs.length ? ` (${runs.length})` : ""}`}
               </button>
               <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]"
+                className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
                 onClick={() => setIsSetupCollapsed((current) => !current)}
                 type="button"
               >
                 {isSetupCollapsed ? "Expand setup" : "Collapse setup"}
               </button>
               <button
-                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]"
+                className="rounded-full border border-(--line) px-4 py-2 text-sm font-medium transition hover:-translate-y-0.5 hover:bg-(--card-active)"
                 onClick={() => fileInputRef.current?.click()}
                 type="button"
               >
                 Upload image
               </button>
               <button
-                className="rounded-full bg-[var(--foreground)] px-4 py-2 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
+                className="rounded-full bg-(--foreground) px-4 py-2 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
                 disabled={isRunning}
                 onClick={handleCompare}
                 type="button"
@@ -1339,23 +1339,23 @@ export function BuildOffClient() {
             )}
           >
             <div className="overflow-hidden">
-              <div className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--card)] p-4">
+              <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+                    <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                       Run history
                     </p>
                     <h3 className="mt-1 text-xl font-semibold tracking-[-0.04em]">
                       Database-backed recent runs
                     </h3>
                   </div>
-                  <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
+                  <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
                     {isLoadingRuns ? "Refreshing..." : `${runs.length}/${MAX_RUNS}`}
                   </span>
                 </div>
 
                 {runsError ? (
-                  <div className="mt-3 rounded-[1.1rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+                  <div className="mt-3 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
                     {runsError}
                   </div>
                 ) : null}
@@ -1367,26 +1367,26 @@ export function BuildOffClient() {
                         <button
                           key={run.id}
                           className={cn(
-                            "w-full rounded-[1.3rem] border px-4 py-4 text-left transition hover:-translate-y-0.5 hover:bg-[var(--card-active)]",
+                            "w-full rounded-[1.3rem] border px-4 py-4 text-left transition hover:-translate-y-0.5 hover:bg-(--card-active)",
                             activeRunId === run.id
-                              ? "border-[var(--foreground)] bg-white"
-                              : "border-[var(--line)] bg-[var(--card)]",
+                              ? "border-(--foreground) bg-(--card-active)"
+                              : "border-(--line) bg-(--card)",
                           )}
                           onClick={() => hydrateRun(run)}
                           type="button"
                         >
                           <div className="mb-3 flex items-center justify-between gap-4">
-                            <span className="text-sm font-semibold text-[var(--muted)]">
+                            <span className="text-sm font-semibold text-(--muted)">
                               Run {runs.length - index}
                             </span>
-                            <span className="text-xs text-[var(--muted)]">{formatTimestamp(run.createdAt)}</span>
+                            <span className="text-xs text-(--muted)">{formatTimestamp(run.createdAt)}</span>
                           </div>
                           <p className="line-clamp-2 text-sm leading-6">{run.prompt}</p>
                         </button>
                       ))}
                     </div>
                   ) : (
-                    <div className="rounded-[1.5rem] border border-dashed border-[var(--line)] px-5 py-8 text-sm leading-6 text-[var(--muted)]">
+                    <div className="rounded-[1.5rem] border border-dashed border-(--line) px-5 py-8 text-sm leading-6 text-(--muted)">
                       {isLoadingRuns
                         ? "Loading saved runs from the database."
                         : "Saved runs from the database will appear here."}
@@ -1399,20 +1399,20 @@ export function BuildOffClient() {
 
           {isSetupCollapsed ? (
             <button
-              className="mb-4 w-full rounded-[1.5rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_28%,white)] px-4 py-4 text-left transition hover:bg-[color:color-mix(in_oklch,var(--accent-soft)_35%,white)]"
+              className="mb-4 w-full rounded-[1.5rem] border border-(--line) bg-[color-mix(in_oklch,var(--accent-soft)_50%,var(--card))] px-4 py-4 text-left transition hover:bg-[color-mix(in_oklch,var(--accent-soft)_65%,var(--card))]"
               onClick={() => setIsSetupCollapsed(false)}
               type="button"
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-(--muted)">
                     Setup collapsed
                   </p>
-                  <p className="mt-1 text-sm leading-6 text-[color:color-mix(in_oklch,var(--foreground)_84%,black)]">
+                  <p className="mt-1 text-sm leading-6 text-(--foreground)">
                     {summarizePrompt(prompt)}
                   </p>
                 </div>
-                <span className="rounded-full border border-[var(--line)] bg-[var(--card)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
+                <span className="rounded-full border border-(--line) bg-(--card) px-3 py-1 text-xs font-medium text-(--muted)">
                   {selectedModels.length} models · {imageName}
                 </span>
               </div>
@@ -1421,11 +1421,11 @@ export function BuildOffClient() {
 
           <div
             className={cn(
-              "grid overflow-hidden transition-[grid-template-rows,opacity] duration-400 ease-[cubic-bezier(0.22,1,0.36,1)]",
-              isSetupCollapsed ? "grid-rows-[0fr] opacity-70" : "grid-rows-[1fr] opacity-100",
+              "grid transition-[grid-template-rows,opacity] duration-400 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              isSetupCollapsed ? "grid-rows-[0fr] overflow-hidden opacity-70" : "grid-rows-[1fr] opacity-100",
             )}
           >
-            <div className="overflow-hidden">
+            <div className="min-h-0">
               <input
                 ref={fileInputRef}
                 accept="image/*"
@@ -1435,7 +1435,7 @@ export function BuildOffClient() {
               />
 
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1.18fr)_minmax(320px,0.82fr)]">
-                <div className="overflow-hidden rounded-[1.7rem] border border-[var(--line)] bg-[var(--panel-strong)]">
+                <div className="overflow-hidden rounded-[1.7rem] border border-(--line) bg-(--panel-strong)">
                   {imageDataUrl ? (
                     <div className="relative aspect-[16/10] h-full w-full">
                       <Image
@@ -1448,20 +1448,20 @@ export function BuildOffClient() {
                       />
                     </div>
                   ) : (
-                    <div className="flex aspect-[16/10] items-center justify-center p-8 text-center text-sm text-[var(--muted)]">
+                    <div className="flex aspect-[16/10] items-center justify-center p-8 text-center text-sm text-(--muted)">
                       Paste any screenshot from your clipboard, or upload one here.
                     </div>
                   )}
                 </div>
 
                 <div className="flex flex-col gap-3">
-                  <div className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--card)] p-4">
-                    <p className="text-sm font-medium text-[var(--muted)]">Image</p>
+                  <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
+                    <p className="text-sm font-medium text-(--muted)">Image</p>
                     <p className="mt-1 truncate text-lg font-semibold">{imageName}</p>
                   </div>
 
-                  <label className="flex flex-1 flex-col rounded-[1.6rem] border border-[var(--line)] bg-[var(--card)] p-4">
-                    <span className="mb-3 text-sm font-medium text-[var(--muted)]">Prompt</span>
+                  <label className="flex flex-1 flex-col rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
+                    <span className="mb-3 text-sm font-medium text-(--muted)">Prompt</span>
                     <textarea
                       className="min-h-48 flex-1 resize-none bg-transparent text-sm leading-6 outline-none"
                       onChange={(event) => setPrompt(event.target.value)}
@@ -1471,35 +1471,35 @@ export function BuildOffClient() {
                   </label>
 
                   {errorMessage ? (
-                    <div className="rounded-[1.25rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+                    <div className="rounded-[1.25rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
                       {errorMessage}
                     </div>
                   ) : null}
 
-                  <div className="rounded-[1.6rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_18%,white)] p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--line)] pb-3">
+                  <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-(--line) pb-3">
                       <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+                        <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                           Lineup
                         </p>
                         <h3 className="mt-1 text-xl font-semibold tracking-[-0.04em]">Models</h3>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <div className="flex items-center overflow-hidden rounded-full border border-[var(--line)] bg-[var(--card)]">
+                        <div className="flex items-center overflow-hidden rounded-full border border-(--line) bg-(--card)">
                           <button
-                            className="px-3 py-2 text-sm font-medium transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-45"
+                            className="px-3 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
                             disabled={!canRemovePanel || isRunning}
                             onClick={() => handleTargetPanelCount(selectedModels.length - 1)}
                             type="button"
                           >
                             -
                           </button>
-                          <span className="min-w-16 px-3 text-center text-sm font-medium text-[var(--muted)]">
+                          <span className="min-w-16 px-3 text-center text-sm font-medium text-(--muted)">
                             {selectedModels.length}
                           </span>
                           <button
-                            className="px-3 py-2 text-sm font-medium transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-45"
+                            className="px-3 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
                             disabled={!canAddPanel || isRunning}
                             onClick={() => handleTargetPanelCount(selectedModels.length + 1)}
                             type="button"
@@ -1508,18 +1508,18 @@ export function BuildOffClient() {
                           </button>
                         </div>
 
-                        <span className="rounded-full border border-[var(--line)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--muted)]">
+                        <span className="rounded-full border border-(--line) px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-(--muted)">
                           2-12
                         </span>
                       </div>
                     </div>
 
-                    <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                    <p className="mt-3 text-sm leading-6 text-(--muted)">
                       Keep the matchup tight with a smaller list of vision-capable models.
                     </p>
 
                     {modelsError ? (
-                      <div className="mt-3 rounded-[1.1rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-4 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+                      <div className="mt-3 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
                         {modelsError}
                       </div>
                     ) : null}
@@ -1532,18 +1532,18 @@ export function BuildOffClient() {
                         return (
                           <div
                             key={`${model.id}-${index}`}
-                            className="rounded-[1.25rem] border border-[var(--line)] bg-[var(--card)] p-3"
+                            className="rounded-[1.25rem] border border-(--line) bg-(--card) p-3"
                           >
                             <div className="mb-2 flex items-center justify-between gap-3">
                               <div className="min-w-0">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                                   Panel {index + 1}
                                 </p>
                                 <p className="mt-1 truncate text-sm font-medium">{model.label}</p>
                               </div>
 
                               <button
-                                className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[11px] font-medium transition hover:bg-[var(--card-active)] disabled:cursor-not-allowed disabled:opacity-45"
+                                className="rounded-full border border-(--line) px-2.5 py-1 text-[11px] font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
                                 disabled={!canRemovePanel || isRunning}
                                 onClick={() => handleRemovePanel(index)}
                                 type="button"
@@ -1562,17 +1562,17 @@ export function BuildOffClient() {
                             />
 
                             {selectedCatalogModel ? (
-                              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-[var(--muted)]">
-                                <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--muted)">
+                                <span className="rounded-full border border-(--line) px-2.5 py-1">
                                   {selectedCatalogModel.ownedBy}
                                 </span>
-                                <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                                <span className="rounded-full border border-(--line) px-2.5 py-1">
                                   {formatMonthYear(selectedCatalogModel.releasedAt)}
                                 </span>
-                                <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                                <span className="rounded-full border border-(--line) px-2.5 py-1">
                                   in {formatRatePerMillion(selectedCatalogModel.pricing.input)}/1M
                                 </span>
-                                <span className="rounded-full border border-[var(--line)] px-2.5 py-1">
+                                <span className="rounded-full border border-(--line) px-2.5 py-1">
                                   out {formatRatePerMillion(selectedCatalogModel.pricing.output)}/1M
                                 </span>
                               </div>
@@ -1595,31 +1595,31 @@ export function BuildOffClient() {
           >
             <div className="mb-4 flex items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--muted)]">
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] text-(--muted)">
                   Live outputs
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
                   Streaming model responses
                 </h2>
               </div>
-              <div className="flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-sm text-[var(--muted)]">
-                <span className="pulse-dot h-2.5 w-2.5 rounded-full bg-[var(--accent)]" />
+              <div className="flex items-center gap-2 rounded-full border border-(--line) px-3 py-2 text-sm text-(--muted)">
+                <span className="pulse-dot h-2.5 w-2.5 rounded-full bg-(--accent)" />
                 updates in real time
               </div>
             </div>
 
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-[var(--line)] bg-[var(--card)] px-4 py-3">
-              <p className="text-sm leading-6 text-[var(--muted)]">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.3rem] border border-(--line) bg-(--card) px-4 py-3">
+              <p className="text-sm leading-6 text-(--muted)">
                 Preview mode renders the streamed HTML artifact live. Raw mode shows the exact model output.
               </p>
 
-              <div className="flex items-center overflow-hidden rounded-full border border-[var(--line)] bg-white">
+              <div className="flex items-center overflow-hidden rounded-full border border-(--line) bg-(--card)">
                 <button
                   className={cn(
                     "px-4 py-2 text-sm font-medium transition",
                     outputMode === "preview"
-                      ? "bg-[var(--foreground)] text-white"
-                      : "text-[var(--muted)] hover:bg-[var(--card-active)]",
+                      ? "bg-(--foreground) text-(--background)"
+                      : "text-(--muted) hover:bg-(--card-active)",
                   )}
                   onClick={() => setOutputMode("preview")}
                   type="button"
@@ -1630,8 +1630,8 @@ export function BuildOffClient() {
                   className={cn(
                     "px-4 py-2 text-sm font-medium transition",
                     outputMode === "raw"
-                      ? "bg-[var(--foreground)] text-white"
-                      : "text-[var(--muted)] hover:bg-[var(--card-active)]",
+                      ? "bg-(--foreground) text-(--background)"
+                      : "text-(--muted) hover:bg-(--card-active)",
                   )}
                   onClick={() => setOutputMode("raw")}
                   type="button"
@@ -1641,21 +1641,21 @@ export function BuildOffClient() {
               </div>
             </div>
 
-            <div className="mb-4 overflow-hidden rounded-[1.35rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_20%,white)]">
+            <div className="mb-4 overflow-hidden rounded-[1.35rem] border border-(--line) bg-(--card)">
               <div className="overflow-x-auto">
                 <table className="min-w-full border-separate border-spacing-0 text-sm">
                   <thead>
                     <tr>
-                      <th className="sticky left-0 z-10 border-b border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_32%,white)] px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                      <th className="sticky left-0 z-10 border-b border-(--line) bg-(--panel-strong) px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                         Compare
                       </th>
                       {results.map((result, index) => (
                         <th
-                          className="min-w-44 border-b border-[var(--line)] px-4 py-3 text-left align-top"
+                          className="min-w-44 border-b border-(--line) px-4 py-3 text-left align-top"
                           key={`${result.modelId}-${index}-compare-heading`}
                         >
                           <p className="text-sm font-semibold">{result.label}</p>
-                          <p className="mt-1 text-xs text-[var(--muted)]">{result.modelId}</p>
+                          <p className="mt-1 text-xs text-(--muted)">{result.modelId}</p>
                         </th>
                       ))}
                     </tr>
@@ -1663,12 +1663,12 @@ export function BuildOffClient() {
                   <tbody>
                     {comparisonRows.map((row) => (
                       <tr key={row.label}>
-                        <th className="sticky left-0 z-10 border-b border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_24%,white)] px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted)]">
+                        <th className="sticky left-0 z-10 border-b border-(--line) bg-(--panel) px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                           {row.label}
                         </th>
                         {results.map((result, index) => (
                           <td
-                            className="border-b border-[var(--line)] px-4 py-3 align-top text-[color:color-mix(in_oklch,var(--foreground)_88%,black)]"
+                            className="border-b border-(--line) px-4 py-3 align-top text-(--foreground)"
                             key={`${result.modelId}-${index}-${row.label}`}
                           >
                             {row.render(result)}
@@ -1693,10 +1693,10 @@ export function BuildOffClient() {
                 return (
                   <section
                     key={previewId}
-                    className="overflow-hidden rounded-[1.7rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--foreground)_2%,white)]"
+                    className="overflow-hidden rounded-[1.7rem] border border-(--line) bg-(--card)"
                     style={{ animationDelay: `${index * 70}ms` }}
                   >
-                  <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-4">
+                  <div className="flex items-center justify-between border-b border-(--line) px-4 py-4">
                     <div>
                       <h3 className="text-xl font-semibold tracking-[-0.04em]">{result.label}</h3>
                       <p className={cn("mt-1 text-sm font-medium", statusTone(result.status))}>
@@ -1705,72 +1705,72 @@ export function BuildOffClient() {
                     </div>
 
                     <div className="flex gap-2">
-                      <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
+                      <span className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium text-(--muted)">
                         {result.modelId}
                       </span>
                     </div>
                   </div>
 
-                  <div className="border-b border-[var(--line)] px-4 py-2">
+                  <div className="border-b border-(--line) px-4 py-2">
                     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
-                      <span className="text-[var(--muted)]">
+                      <span className="text-(--muted)">
                         Latency{" "}
-                        <span className="font-semibold text-[var(--foreground)]">
+                        <span className="font-semibold text-(--foreground)">
                           {formatDuration(result.latencyMs)}
                         </span>
                       </span>
-                      <span className="text-[var(--muted)]">
+                      <span className="text-(--muted)">
                         Runtime{" "}
-                        <span className="font-semibold text-[var(--foreground)]">
+                        <span className="font-semibold text-(--foreground)">
                           {formatDuration(liveElapsed(result, nowMs))}
                         </span>
                       </span>
-                      <span className="text-[var(--muted)]">
+                      <span className="text-(--muted)">
                         In{" "}
-                        <span className="font-semibold text-[var(--foreground)]">
+                        <span className="font-semibold text-(--foreground)">
                           {formatTokenCount(result.usage?.inputTokens)}
                         </span>
                       </span>
-                      <span className="text-[var(--muted)]">
+                      <span className="text-(--muted)">
                         Out{" "}
-                        <span className="font-semibold text-[var(--foreground)]">
+                        <span className="font-semibold text-(--foreground)">
                           {formatTokenCount(result.usage?.outputTokens)}
                         </span>
                       </span>
                       {result.usage?.reasoningTokens != null ? (
-                        <span className="text-[var(--muted)]">
+                        <span className="text-(--muted)">
                           Reasoning{" "}
-                          <span className="font-semibold text-[var(--foreground)]">
+                          <span className="font-semibold text-(--foreground)">
                             {formatTokenCount(result.usage.reasoningTokens)}
                           </span>
                         </span>
                       ) : null}
                       {result.usage?.cacheReadTokens != null ? (
-                        <span className="text-[var(--muted)]">
+                        <span className="text-(--muted)">
                           Cache read{" "}
-                          <span className="font-semibold text-[var(--foreground)]">
+                          <span className="font-semibold text-(--foreground)">
                             {formatTokenCount(result.usage.cacheReadTokens)}
                           </span>
                         </span>
                       ) : null}
                       {result.usage?.cacheWriteTokens != null ? (
-                        <span className="text-[var(--muted)]">
+                        <span className="text-(--muted)">
                           Cache write{" "}
-                          <span className="font-semibold text-[var(--foreground)]">
+                          <span className="font-semibold text-(--foreground)">
                             {formatTokenCount(result.usage.cacheWriteTokens)}
                           </span>
                         </span>
                       ) : null}
-                      <span className="text-[var(--muted)]">
+                      <span className="text-(--muted)">
                         Cost{" "}
-                        <span className="font-semibold text-[var(--foreground)]">
+                        <span className="font-semibold text-(--foreground)">
                           {formatCost(result.costs?.total)}
                         </span>
                       </span>
                       {result.finishReason ? (
-                        <span className="text-[var(--muted)]">
+                        <span className="text-(--muted)">
                           Finish{" "}
-                          <span className="font-semibold text-[var(--foreground)]">
+                          <span className="font-semibold text-(--foreground)">
                             {result.finishReason}
                           </span>
                         </span>
@@ -1783,13 +1783,13 @@ export function BuildOffClient() {
                       outputMode === "preview" ? (
                         <div className="space-y-3">
                           {!hasHtml ? (
-                            <div className="rounded-[1.1rem] border border-[var(--line)] bg-[color:color-mix(in_oklch,var(--accent-soft)_35%,white)] px-3 py-2 text-sm text-[var(--muted)]">
+                            <div className="rounded-[1.1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-sm text-(--muted)">
                               No HTML tags detected yet. The live preview will become meaningful once the model starts emitting markup.
                             </div>
                           ) : null}
 
                           {cardPreviewErrors.length ? (
-                            <div className="rounded-[1.1rem] border border-[color:color-mix(in_oklch,var(--danger)_30%,white)] bg-[color:color-mix(in_oklch,var(--danger)_10%,white)] px-3 py-3 text-sm text-[color:color-mix(in_oklch,var(--danger)_85%,black)]">
+                            <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-3 text-sm text-(--danger)">
                               {cardPreviewErrors.map((message, errorIndex) => (
                                 <p key={`${previewId}-error-${errorIndex}`}>{message}</p>
                               ))}
@@ -1797,7 +1797,7 @@ export function BuildOffClient() {
                           ) : null}
 
                           <OutputViewport
-                            className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-white"
+                            className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
                             contentClassName="overflow-hidden"
                             title={`${result.label} HTML preview`}
                           >
@@ -1811,7 +1811,7 @@ export function BuildOffClient() {
                         </div>
                       ) : (
                         <OutputViewport
-                          className="overflow-hidden rounded-[1.2rem] border border-[var(--line)] bg-[var(--card)]"
+                          className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
                           contentClassName="overflow-auto px-4 py-4"
                           title={`${result.label} raw output`}
                         >
@@ -1821,7 +1821,7 @@ export function BuildOffClient() {
                         </OutputViewport>
                       )
                     ) : (
-                      <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-[var(--muted)]">
+                      <div className="flex min-h-72 items-center justify-center text-center text-sm leading-6 text-(--muted)">
                         {isRunning
                           ? "This panel will fill as soon as the model starts sending tokens."
                           : "Run the harness to compare how each model sees the screenshot."}
