@@ -77,6 +77,9 @@ export type ModelResult = {
   responseId?: string;
   usage?: ModelUsageSnapshot;
   costs?: ModelCostSnapshot;
+  outputUrl?: string;
+  outputObjectKey?: string;
+  outputContentType?: string;
 };
 
 export type SavedRun = {
@@ -85,6 +88,7 @@ export type SavedRun = {
   prompt: string;
   imageDataUrl?: string;
   imageUrl?: string;
+  imageObjectKey?: string;
   imageName: string;
   models: CompareModel[];
   results: ModelResult[];

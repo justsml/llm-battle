@@ -23,6 +23,30 @@ export function isStorageConfigured() {
   );
 }
 
+function buildObjectUrl(key: string) {
+  const endpoint = (process.env.AWS_ENDPOINT_URL_S3 ?? "").replace(/\/$/, "");
+  return `${endpoint}/${BUCKET}/${key}`;
+}
+
+async function uploadObject(
+  key: string,
+  body: Buffer,
+  contentType: string,
+): Promise<string> {
+  const s3 = getS3Client();
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
+
+  return buildObjectUrl(key);
+}
+
 /**
  * Upload a data-URL image to Tigris and return the public URL.
  */
@@ -32,18 +56,13 @@ export async function uploadImage(
 ): Promise<string> {
   const { mimeType, base64 } = readDataUrlMeta(dataUrl);
   const body = Buffer.from(base64, "base64");
-  const s3 = getS3Client();
+  return uploadObject(key, body, mimeType);
+}
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: body,
-      ContentType: mimeType,
-    }),
-  );
-
-  // Construct public URL from the S3 endpoint
-  const endpoint = (process.env.AWS_ENDPOINT_URL_S3 ?? "").replace(/\/$/, "");
-  return `${endpoint}/${BUCKET}/${key}`;
+export async function uploadText(
+  key: string,
+  text: string,
+  contentType: string,
+): Promise<string> {
+  return uploadObject(key, Buffer.from(text, "utf8"), contentType);
 }

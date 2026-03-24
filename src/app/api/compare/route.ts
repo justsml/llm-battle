@@ -1,10 +1,16 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { streamText } from "ai";
 
-import { ensureSchema, insertRun, isDatabaseConfigured, updateRunResults } from "@/lib/db";
+import {
+  ensureSchema,
+  finalizeRun,
+  insertRun,
+  isDatabaseConfigured,
+  upsertRunModelResult,
+} from "@/lib/db";
 import { estimateModelCost, fetchGatewayModels } from "@/lib/gateway-models";
 import { DEFAULT_MODELS } from "@/lib/models";
-import { isStorageConfigured, uploadImage } from "@/lib/storage";
+import { isStorageConfigured, uploadImage, uploadText } from "@/lib/storage";
 import type { CompareRequest, CompareModel, GatewayModel, ModelResult, ModelUsageSnapshot } from "@/lib/types";
 import { readDataUrlMeta } from "@/lib/utils";
 
@@ -162,6 +168,64 @@ function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function looksLikeHtml(value: string) {
+  return /<!doctype html|<html[\s>]|<body[\s>]|<head[\s>]|<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(value);
+}
+
+function createOutputArtifactKey(runId: string, modelIndex: number, modelId: string, output: string) {
+  const extension = looksLikeHtml(output) ? "html" : "txt";
+  const modelSlug = encodeURIComponent(modelId);
+  return {
+    key: `runs/${runId}/models/${String(modelIndex).padStart(2, "0")}-${modelSlug}/output.${extension}`,
+    contentType: extension === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
+  };
+}
+
+async function persistModelResult(params: {
+  runId: string;
+  modelIndex: number;
+  result: ModelResult;
+  useDb: boolean;
+  useStorage: boolean;
+}) {
+  let persistedResult = params.result;
+
+  if (params.useStorage) {
+    const artifact = createOutputArtifactKey(
+      params.runId,
+      params.modelIndex,
+      params.result.modelId,
+      params.result.text,
+    );
+
+    try {
+      const outputUrl = await uploadText(artifact.key, params.result.text, artifact.contentType);
+      persistedResult = {
+        ...persistedResult,
+        outputUrl,
+        outputObjectKey: artifact.key,
+        outputContentType: artifact.contentType,
+      };
+    } catch (error) {
+      console.error(`Output upload failed for ${params.result.modelId}:`, error);
+    }
+  }
+
+  if (params.useDb) {
+    try {
+      await upsertRunModelResult({
+        runId: params.runId,
+        modelIndex: params.modelIndex,
+        result: persistedResult,
+      });
+    } catch (error) {
+      console.error(`Failed to persist model result for ${params.result.modelId}:`, error);
+    }
+  }
+
+  return persistedResult;
+}
+
 export async function POST(request: Request) {
   if (!process.env.AI_GATEWAY_API_KEY) {
     return Response.json(
@@ -187,60 +251,145 @@ export async function POST(request: Request) {
 
   const runId = uid();
   const createdAt = new Date().toISOString();
-  const useDb = isDatabaseConfigured();
+  let useDb = isDatabaseConfigured();
   const useStorage = isStorageConfigured();
+  const baseResults = models.map((model) => ({
+    modelId: model.id,
+    label: model.label,
+    text: "",
+    status: "idle" as const,
+  }));
+  const screenshotObjectKey = `runs/${runId}/input/screenshot`;
 
   // Upload image to Tigris in parallel with streaming
   const imageUploadPromise = useStorage
-    ? uploadImage(`runs/${runId}/screenshot`, imageDataUrl).catch((error) => {
-        console.error("Image upload failed:", error);
-        return "";
-      })
-    : Promise.resolve("");
+    ? uploadImage(screenshotObjectKey, imageDataUrl)
+        .then((imageUrl) => ({
+          imageUrl,
+          imageObjectKey: screenshotObjectKey,
+        }))
+        .catch((error) => {
+          console.error("Image upload failed:", error);
+          return {
+            imageUrl: "",
+            imageObjectKey: "",
+          };
+        })
+    : Promise.resolve({
+        imageUrl: "",
+        imageObjectKey: "",
+      });
 
   // Ensure schema exists if DB is configured
   if (useDb) {
-    await ensureSchema().catch((error) => console.error("Schema init failed:", error));
+    try {
+      await ensureSchema();
+      await insertRun({
+        id: runId,
+        createdAt,
+        status: "running",
+        prompt,
+        imageUrl: "",
+        imageObjectKey: "",
+        imageDataUrl: useStorage ? undefined : imageDataUrl,
+        imageName,
+        models,
+        results: baseResults,
+      });
+    } catch (error) {
+      useDb = false;
+      console.error("Initial run persistence failed:", error);
+    }
   }
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      sendEvent(controller, {
-        type: "ready",
-        runId,
-        modelIds: models.map((model) => model.id),
-      });
+      try {
+        sendEvent(controller, {
+          type: "ready",
+          runId,
+          modelIds: models.map((model) => model.id),
+        });
 
-      const finalResults = await Promise.all(
-        models.map((model) =>
-          streamModelResult(controller, model, gatewayModelMap.get(model.id), prompt, imageDataUrl),
-        ),
-      );
+        const finalResults = await Promise.all(
+          models.map(async (model, modelIndex) => {
+            const result = await streamModelResult(
+              controller,
+              model,
+              gatewayModelMap.get(model.id),
+              prompt,
+              imageDataUrl,
+            );
+            return persistModelResult({
+              runId,
+              modelIndex,
+              result,
+              useDb,
+              useStorage,
+            });
+          }),
+        );
 
-      // Persist to Neon after all models finish
-      if (useDb) {
-        const imageUrl = await imageUploadPromise;
-        try {
-          await insertRun({
-            id: runId,
-            createdAt,
-            prompt,
-            imageUrl,
-            imageName,
-            models,
-            results: finalResults,
+        if (useDb) {
+          const imageArtifact = await imageUploadPromise;
+          const completedAt = new Date().toISOString();
+
+          try {
+            await finalizeRun({
+              id: runId,
+              completedAt,
+              status: "completed",
+              results: finalResults,
+              imageUrl: imageArtifact.imageUrl,
+              imageObjectKey: imageArtifact.imageObjectKey,
+              imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
+            });
+          } catch (error) {
+            console.error("Failed to finalize run persistence:", error);
+          }
+
+          sendEvent(controller, {
+            type: "complete",
+            runId,
+            completedAt,
           });
-        } catch (error) {
-          console.error("Failed to persist run:", error);
+        } else {
+          const completedAt = new Date().toISOString();
+          sendEvent(controller, {
+            type: "complete",
+            runId,
+            completedAt,
+          });
         }
-      }
+      } catch (error) {
+        console.error("Compare stream failed:", error);
+        if (useDb) {
+          const imageArtifact = await imageUploadPromise;
+          const completedAt = new Date().toISOString();
 
-      sendEvent(controller, {
-        type: "complete",
-        runId,
-        completedAt: new Date().toISOString(),
-      });
-      controller.close();
+          try {
+            await finalizeRun({
+              id: runId,
+              completedAt,
+              status: "error",
+              results: baseResults,
+              imageUrl: imageArtifact.imageUrl,
+              imageObjectKey: imageArtifact.imageObjectKey,
+              imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
+            });
+          } catch (finalizeError) {
+            console.error("Failed to finalize errored run persistence:", finalizeError);
+          }
+        }
+
+        sendEvent(controller, {
+          type: "fatal",
+          runId,
+          error: error instanceof Error ? error.message : "Unexpected compare error.",
+        });
+      } finally {
+        controller.close();
+      }
     },
   });
 
