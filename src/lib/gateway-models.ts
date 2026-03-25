@@ -5,7 +5,7 @@ import type {
   ModelUsageSnapshot,
   TokenPricingTier,
 } from "@/lib/types";
-import { isVisionCapableModel } from "@/lib/models";
+import { buildModelConfig, isVisionCapableModel } from "@/lib/models";
 
 type GatewayPricingPayload = {
   input?: string;
@@ -34,6 +34,39 @@ type GatewayModelPayload = {
 
 type GatewayModelsResponse = {
   data?: GatewayModelPayload[];
+};
+
+type OpenRouterPricingPayload = {
+  prompt?: string;
+  completion?: string;
+  image?: string;
+  request?: string;
+  input_cache_read?: string;
+  input_cache_write?: string;
+};
+
+type OpenRouterArchitecturePayload = {
+  modality?: string;
+  input_modalities?: string[];
+  output_modalities?: string[];
+};
+
+type OpenRouterModelPayload = {
+  id?: string;
+  name?: string;
+  description?: string;
+  created?: number;
+  context_length?: number;
+  top_provider?: {
+    context_length?: number;
+    max_completion_tokens?: number;
+  };
+  architecture?: OpenRouterArchitecturePayload;
+  pricing?: OpenRouterPricingPayload;
+};
+
+type OpenRouterModelsResponse = {
+  data?: OpenRouterModelPayload[];
 };
 
 function toNumber(value?: string) {
@@ -79,6 +112,7 @@ function normalizeModel(model: GatewayModelPayload): GatewayModel | null {
   return {
     id: model.id,
     name: model.name?.trim() || model.id,
+    config: buildModelConfig(model.id, "vercel"),
     ownedBy: model.owned_by?.trim() || "unknown",
     createdAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
     releasedAt: model.released ? new Date(model.released * 1000).toISOString() : undefined,
@@ -89,6 +123,55 @@ function normalizeModel(model: GatewayModelPayload): GatewayModel | null {
     tags,
     supportsImageInput: isVisionCapableModel({ type, tags }),
     pricing: normalizePricing(model.pricing),
+  };
+}
+
+function isOpenRouterVisionCapable(model: OpenRouterModelPayload) {
+  const architecture = model.architecture;
+  const modalities = [
+    architecture?.modality,
+    ...(architecture?.input_modalities ?? []),
+    ...(architecture?.output_modalities ?? []),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+
+  return modalities.includes("image");
+}
+
+function normalizeOpenRouterPricing(pricing?: OpenRouterPricingPayload): GatewayModelPricing {
+  return {
+    input: toNumber(pricing?.prompt) ?? toNumber(pricing?.image),
+    output: toNumber(pricing?.completion),
+    inputCacheRead: toNumber(pricing?.input_cache_read),
+    inputCacheWrite: toNumber(pricing?.input_cache_write),
+    inputTiers: [],
+    outputTiers: [],
+    inputCacheReadTiers: [],
+    inputCacheWriteTiers: [],
+  };
+}
+
+function normalizeOpenRouterModel(model: OpenRouterModelPayload): GatewayModel | null {
+  if (!model.id) return null;
+
+  const provider = model.id.split("/")[0]?.trim() || "openrouter";
+  const supportsImageInput = isOpenRouterVisionCapable(model);
+
+  return {
+    id: model.id,
+    name: model.name?.trim() || model.id,
+    config: buildModelConfig(model.id, "openrouter"),
+    ownedBy: provider,
+    type: "language",
+    tags: supportsImageInput ? ["vision"] : [],
+    createdAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
+    releasedAt: model.created ? new Date(model.created * 1000).toISOString() : undefined,
+    description: model.description?.trim() || undefined,
+    contextWindow: model.top_provider?.context_length ?? model.context_length,
+    maxTokens: model.top_provider?.max_completion_tokens,
+    supportsImageInput,
+    pricing: normalizeOpenRouterPricing(model.pricing),
   };
 }
 
@@ -117,6 +200,48 @@ export async function fetchGatewayModels() {
 
       return left.name.localeCompare(right.name);
     });
+}
+
+export async function fetchOpenRouterModels() {
+  const response = await fetch("https://openrouter.ai/api/v1/models", {
+    headers: { Accept: "application/json" },
+    next: { revalidate: 3600 },
+  });
+
+  if (!response.ok) {
+    throw new Error("Unable to load OpenRouter models.");
+  }
+
+  const payload = (await response.json()) as OpenRouterModelsResponse;
+
+  return (payload.data ?? [])
+    .map(normalizeOpenRouterModel)
+    .filter((model): model is GatewayModel => model !== null)
+    .sort((left, right) => {
+      if (left.supportsImageInput !== right.supportsImageInput) {
+        return left.supportsImageInput ? -1 : 1;
+      }
+
+      const providerOrder = left.ownedBy.localeCompare(right.ownedBy);
+      if (providerOrder !== 0) return providerOrder;
+
+      return left.name.localeCompare(right.name);
+    });
+}
+
+export async function fetchAvailableModels() {
+  const [gatewayModels, openRouterModels] = await Promise.all([
+    fetchGatewayModels(),
+    fetchOpenRouterModels().catch(() => []),
+  ]);
+
+  const seenConfigs = new Set<string>();
+
+  return [...gatewayModels, ...openRouterModels].filter((model) => {
+    if (seenConfigs.has(model.config)) return false;
+    seenConfigs.add(model.config);
+    return true;
+  });
 }
 
 function calculateTieredCost(tokens: number, baseRate: number | undefined, tiers: TokenPricingTier[]) {

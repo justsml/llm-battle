@@ -24,13 +24,16 @@ export function buildModelConfig(modelId: string, provider: ModelProviderAlias =
   });
 }
 
+export function getModelConfig(model: Pick<CompareModel, "id" | "config"> | string) {
+  return typeof model === "string" ? buildModelConfig(model) : model.config ?? buildModelConfig(model.id);
+}
+
 export function getModelLabel(model: Pick<CompareModel, "id" | "config"> | string) {
   return parseModelConfig(model).model;
 }
 
 export function parseModelConfig(model: Pick<CompareModel, "id" | "config"> | string) {
-  const config = typeof model === "string" ? buildModelConfig(model) : model.config ?? buildModelConfig(model.id);
-  const parsed = parse(config);
+  const parsed = parse(getModelConfig(model));
 
   return {
     ...parsed,
@@ -52,7 +55,7 @@ export const DEFAULT_MODELS: CompareModel[] = [
   config: buildModelConfig(id),
 }));
 
-export function isVisionCapableModel(model: Pick<GatewayModel, "type" | "tags" | "supportsImageInput">) {
+export function isVisionCapableModel(model: Pick<GatewayModel, "type" | "tags"> & { supportsImageInput?: boolean }) {
   if (model.type !== "language") return false;
 
   return model.supportsImageInput || model.tags.includes("vision") || model.tags.includes("file-input");
@@ -62,6 +65,6 @@ export function toCompareModel(model: Pick<GatewayModel, "id" | "name">): Compar
   return {
     id: model.id,
     label: getModelLabel(model.id),
-    config: buildModelConfig(model.id),
+    config: getModelConfig(model),
   };
 }

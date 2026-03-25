@@ -24,6 +24,7 @@ export type GatewayModelPricing = {
 export type GatewayModel = {
   id: string;
   name: string;
+  config: string;
   ownedBy: string;
   type: string;
   tags: string[];

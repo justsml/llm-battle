@@ -9,8 +9,8 @@ import {
   isDatabaseConfigured,
   upsertRunModelResult,
 } from "@/lib/db";
-import { estimateModelCost, fetchGatewayModels } from "@/lib/gateway-models";
-import { DEFAULT_MODELS } from "@/lib/models";
+import { estimateModelCost, fetchAvailableModels } from "@/lib/gateway-models";
+import { DEFAULT_MODELS, parseModelConfig } from "@/lib/models";
 import { isStorageConfigured, uploadImage, uploadText } from "@/lib/storage";
 import type { CompareRequest, CompareModel, GatewayModel, ModelResult, ModelUsageSnapshot } from "@/lib/types";
 import { readDataUrlMeta } from "@/lib/utils";
@@ -23,6 +23,36 @@ const gateway = createOpenAICompatible({
   apiKey: process.env.AI_GATEWAY_API_KEY,
   baseURL: "https://ai-gateway.vercel.sh/v1",
 });
+
+const openrouter = createOpenAICompatible({
+  name: "openrouter",
+  apiKey: process.env.OPENROUTER_API_KEY,
+  baseURL: "https://openrouter.ai/api/v1",
+  headers: {
+    "HTTP-Referer": "https://github.com/justsml/llm-battle",
+    "X-Title": "LLM Build-Off",
+  },
+});
+
+function getProviderClient(model: CompareModel) {
+  const parsed = parseModelConfig(model);
+
+  if (parsed.host === "openrouter.ai") {
+    if (!process.env.OPENROUTER_API_KEY) {
+      throw new Error("Missing OPENROUTER_API_KEY. Add it to your environment first.");
+    }
+
+    return {
+      client: openrouter,
+      modelId: parsed.model,
+    };
+  }
+
+  return {
+    client: gateway,
+    modelId: parsed.model,
+  };
+}
 
 function sendEvent(
   controller: ReadableStreamDefaultController<Uint8Array>,
@@ -58,8 +88,9 @@ async function streamModelResult(
   });
 
   try {
+    const provider = getProviderClient(model);
     const result = streamText({
-      model: gateway.chatModel(model.id),
+      model: provider.client.chatModel(provider.modelId),
       temperature: 0.3,
       messages: [
         {
@@ -248,8 +279,8 @@ export async function POST(request: Request) {
   const imageDataUrl = body.imageDataUrl?.trim();
   const imageName = body.imageName?.trim() || "screenshot";
   const models = body.models?.length ? body.models : DEFAULT_MODELS;
-  const gatewayModels = await fetchGatewayModels().catch(() => []);
-  const gatewayModelMap = new Map(gatewayModels.map((model) => [model.id, model]));
+  const catalogModels = await fetchAvailableModels().catch(() => []);
+  const catalogModelMap = new Map(catalogModels.map((model) => [model.config, model]));
 
   if (!prompt || !imageDataUrl) {
     return Response.json(
@@ -326,7 +357,7 @@ export async function POST(request: Request) {
             const result = await streamModelResult(
               controller,
               model,
-              gatewayModelMap.get(model.id),
+              catalogModelMap.get(parseModelConfig(model).raw),
               prompt,
               imageDataUrl,
             );

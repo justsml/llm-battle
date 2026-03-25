@@ -15,8 +15,9 @@ import { authClient } from "@/lib/auth-client";
 import {
   DEFAULT_MODELS,
   DEFAULT_PROMPT,
-  buildModelConfig,
+  getModelConfig,
   getModelLabel,
+  parseModelConfig,
   toCompareModel,
 } from "@/lib/models";
 import type {
@@ -117,28 +118,36 @@ function statusTone(status: ModelResult["status"]) {
 
 function syncModelLabels(models: CompareModel[], catalog: GatewayModel[]) {
   return models.map((model) => {
-    const match = catalog.find((item) => item.id === model.id);
+    const match = catalog.find((item) => item.config === getModelConfig(model));
     return match
       ? {
           ...model,
           label: getModelLabel(match.id),
-          config: buildModelConfig(match.id),
+          config: match.config,
         }
       : {
           ...model,
           label: getModelLabel(model),
-          config: model.config ?? buildModelConfig(model.id),
+          config: getModelConfig(model),
         };
   });
 }
 
 function groupModelsByProvider(models: GatewayModel[]) {
   return models.reduce<Record<string, GatewayModel[]>>((groups, model) => {
-    const key = model.ownedBy;
+    const key = `${getModelSourceLabel(model)} / ${model.ownedBy}`;
     groups[key] ??= [];
     groups[key].push(model);
     return groups;
   }, {});
+}
+
+function getModelSourceLabel(model: Pick<CompareModel, "id" | "config"> | GatewayModel) {
+  const { host } = parseModelConfig(model);
+
+  if (host === "openrouter.ai") return "OpenRouter";
+  if (host === "ai-gateway.vercel.sh") return "Vercel";
+  return host;
 }
 
 function getVisionModels(catalog: GatewayModel[]) {
@@ -160,18 +169,18 @@ function getMinSelectableModelCards(catalog: GatewayModel[]) {
 
 function getNextAvailableModels(
   catalog: GatewayModel[],
-  selectedIds: string[],
+  selectedConfigs: string[],
   count: number,
 ) {
   if (count <= 0) return [];
 
-  const usedIds = new Set(selectedIds);
+  const usedIds = new Set(selectedConfigs);
   const nextModels: GatewayModel[] = [];
 
   for (const model of getVisionModels(catalog)) {
-    if (usedIds.has(model.id)) continue;
+    if (usedIds.has(model.config)) continue;
     nextModels.push(model);
-    usedIds.add(model.id);
+    usedIds.add(model.config);
 
     if (nextModels.length >= count) {
       break;
@@ -187,6 +196,25 @@ function looksLikeHtmlDocument(value: string) {
 
 function looksLikeHtml(value: string) {
   return /<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(value);
+}
+
+function unwrapHtmlCodeFence(markup: string) {
+  const trimmed = markup.trim();
+  const fencedMatch = trimmed.match(
+    /^```(?:html|htm)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i,
+  );
+
+  if (fencedMatch) {
+    return fencedMatch[1].trim();
+  }
+
+  const leadingFenceMatch = trimmed.match(/^```(?:html|htm)?[ \t]*\r?\n?/i);
+  if (!leadingFenceMatch) {
+    return markup;
+  }
+
+  const withoutLeadingFence = trimmed.slice(leadingFenceMatch[0].length);
+  return withoutLeadingFence.replace(/\r?\n?```[ \t]*$/i, "").trim();
 }
 
 /**
@@ -225,7 +253,7 @@ function sanitizePreviewMarkup(markup: string): string {
 }
 
 function createPreviewSrcDoc(markup: string, previewId: string) {
-  const sanitized = sanitizePreviewMarkup(markup);
+  const sanitized = sanitizePreviewMarkup(unwrapHtmlCodeFence(markup));
   markup = sanitized;
   const previewBridge = `
 <script>
@@ -390,7 +418,7 @@ type ModelPickerProps = {
   catalog: GatewayModel[];
   disabled: boolean;
   selectedModels: CompareModel[];
-  onSelect: (modelId: string) => void;
+  onSelect: (modelConfig: string) => void;
 };
 
 function ModelPicker({
@@ -407,7 +435,7 @@ function ModelPicker({
   const searchRef = useRef<HTMLInputElement>(null);
 
   const selectedCatalogModel =
-    catalog.find((model) => model.id === value.id) ?? null;
+    catalog.find((model) => model.config === getModelConfig(value)) ?? null;
   const filteredModels = catalog.filter(
     (model) => model.supportsImageInput && modelMatchesQuery(model, query),
   );
@@ -459,10 +487,15 @@ function ModelPicker({
         <span className="block text-sm font-medium">
           {selectedCatalogModel ? getModelLabel(selectedCatalogModel.id) : value.label}
         </span>
-        <span className="mt-1 block truncate text-xs text-(--muted)">
-          {selectedCatalogModel?.releasedAt
-            ? `Released ${formatMonthYear(selectedCatalogModel.releasedAt)}`
-            : value.id}
+        <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-(--muted)">
+          <span className="rounded-full border border-(--line) px-2 py-0.5 font-semibold uppercase tracking-[0.14em]">
+            {selectedCatalogModel ? getModelSourceLabel(selectedCatalogModel) : getModelSourceLabel(value)}
+          </span>
+          <span className="truncate">
+            {selectedCatalogModel
+              ? `${selectedCatalogModel.ownedBy} · ${selectedCatalogModel.releasedAt ? `Released ${formatMonthYear(selectedCatalogModel.releasedAt)}` : selectedCatalogModel.id}`
+              : value.id}
+          </span>
         </span>
       </button>
 
@@ -491,13 +524,13 @@ function ModelPicker({
                         <button
                           className={cn(
                             "w-full rounded-[1rem] border px-3 py-2 text-left transition",
-                            entry.id === value.id
+                            entry.config === getModelConfig(value)
                               ? "border-(--foreground) bg-(--card-active)"
                               : "border-(--line) bg-(--card) hover:bg-(--card-active)",
                           )}
-                          key={entry.id}
+                          key={entry.config}
                           onClick={() => {
-                            onSelect(entry.id);
+                            onSelect(entry.config);
                             setQuery("");
                             setIsOpen(false);
                           }}
@@ -507,6 +540,14 @@ function ModelPicker({
                             <span className="block min-w-0">
                               <span className="block text-sm font-medium">
                                 {getModelLabel(entry.id)}
+                              </span>
+                              <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--muted)">
+                                <span className="rounded-full border border-(--line) px-2 py-0.5 font-semibold uppercase tracking-[0.14em]">
+                                  {getModelSourceLabel(entry)}
+                                </span>
+                                <span className="truncate">
+                                  {entry.ownedBy}
+                                </span>
                               </span>
                             </span>
                             <span className="shrink-0 rounded-full border border-(--line) px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)">
@@ -544,8 +585,9 @@ function LiveHtmlPreview({
   title,
   isStreaming,
 }: LiveHtmlPreviewProps) {
-  const deferredMarkup = useDeferredValue(markup);
-  const previewMarkup = isStreaming ? deferredMarkup : markup;
+  const normalizedMarkup = unwrapHtmlCodeFence(markup);
+  const deferredMarkup = useDeferredValue(normalizedMarkup);
+  const previewMarkup = isStreaming ? deferredMarkup : normalizedMarkup;
 
   return (
     <iframe
@@ -730,7 +772,7 @@ export function BuildOffClient() {
         prompt?: string;
         imageDataUrl?: string;
         imageName?: string;
-        selectedModelIds?: string[];
+        selectedModelConfigs?: string[];
       };
 
       if (typeof draft.prompt === "string") {
@@ -748,10 +790,10 @@ export function BuildOffClient() {
       }
 
       if (
-        Array.isArray(draft.selectedModelIds) &&
-        draft.selectedModelIds.length
+        Array.isArray(draft.selectedModelConfigs) &&
+        draft.selectedModelConfigs.length
       ) {
-        pendingDraftModelIdsRef.current = draft.selectedModelIds;
+        pendingDraftModelIdsRef.current = draft.selectedModelConfigs;
         restoredDraftRef.current = true;
       }
     } catch {
@@ -786,8 +828,8 @@ export function BuildOffClient() {
         setCatalog(nextCatalog);
         const selectedFromDraft =
           pendingDraftModelIdsRef.current
-            ?.map((modelId) =>
-              nextCatalog.find((model) => model.id === modelId),
+            ?.map((config) =>
+              nextCatalog.find((model) => model.config === config),
             )
             .filter(
               (model): model is GatewayModel =>
@@ -796,6 +838,10 @@ export function BuildOffClient() {
             .filter(
               (model, index, models) =>
                 models.findIndex((entry) => entry.id === model.id) === index,
+            )
+            .filter(
+              (model, index, models) =>
+                models.findIndex((entry) => entry.config === model.config) === index,
             ) ?? [];
 
         if (selectedFromDraft.length) {
@@ -849,7 +895,7 @@ export function BuildOffClient() {
           prompt,
           imageDataUrl,
           imageName,
-          selectedModelIds: selectedModels.map((model) => model.id),
+          selectedModelConfigs: selectedModels.map((model) => getModelConfig(model)),
         }),
       );
     } catch {
@@ -930,7 +976,7 @@ export function BuildOffClient() {
 
     const additions = getNextAvailableModels(
       catalog,
-      selectedModels.map((model) => model.id),
+      selectedModels.map((model) => getModelConfig(model)),
       minCards - selectedModels.length,
     ).map(toCompareModel);
 
@@ -1099,8 +1145,8 @@ export function BuildOffClient() {
     setIsHistoryOpen(false);
   }
 
-  function handleModelChange(index: number, nextModelId: string) {
-    const nextModel = catalog.find((model) => model.id === nextModelId);
+  function handleModelChange(index: number, nextModelConfig: string) {
+    const nextModel = catalog.find((model) => model.config === nextModelConfig);
     if (!nextModel || !nextModel.supportsImageInput) return;
 
     setSelectedModels((current) =>
@@ -1132,7 +1178,7 @@ export function BuildOffClient() {
     if (clampedCount > selectedModels.length) {
       const additions = getNextAvailableModels(
         catalog,
-        selectedModels.map((model) => model.id),
+        selectedModels.map((model) => getModelConfig(model)),
         clampedCount - selectedModels.length,
       ).map(toCompareModel);
 
@@ -1224,7 +1270,7 @@ export function BuildOffClient() {
     }
 
     const unsupported = selectedModels.find((model) => {
-      const match = catalog.find((item) => item.id === model.id);
+      const match = catalog.find((item) => item.config === getModelConfig(model));
       return match ? !match.supportsImageInput : false;
     });
 
@@ -1799,9 +1845,11 @@ export function BuildOffClient() {
         {/* Model cards */}
         {selectedModels.map((model, index) => {
           const result = results[index];
+          const catalogModel =
+            catalog.find((entry) => entry.config === getModelConfig(model)) ?? null;
           const previewId = `${model.id}-${index}`;
           const cardPreviewErrors = previewErrors[previewId] ?? [];
-          const hasHtml = looksLikeHtml(result?.text ?? "");
+          const hasHtml = looksLikeHtml(unwrapHtmlCodeFence(result?.text ?? ""));
           const isDragged = dragSourceIndex === index;
           const isDragTarget =
             dragOverIndex === index && dragSourceIndex !== index;
@@ -1841,6 +1889,9 @@ export function BuildOffClient() {
                 ) : null}
                 <span className="flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
                   {model.label}
+                </span>
+                <span className="shrink-0 rounded-full border border-(--line) px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-(--muted)">
+                  {catalogModel ? `${getModelSourceLabel(catalogModel)} · ${catalogModel.ownedBy}` : getModelSourceLabel(model)}
                 </span>
                 <span
                   className={cn(
