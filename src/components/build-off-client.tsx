@@ -12,7 +12,13 @@ import {
 } from "react";
 
 import { authClient } from "@/lib/auth-client";
-import { DEFAULT_MODELS, DEFAULT_PROMPT, toCompareModel } from "@/lib/models";
+import {
+  DEFAULT_MODELS,
+  DEFAULT_PROMPT,
+  buildModelConfig,
+  getModelLabel,
+  toCompareModel,
+} from "@/lib/models";
 import type {
   CompareModel,
   GatewayModel,
@@ -112,7 +118,17 @@ function statusTone(status: ModelResult["status"]) {
 function syncModelLabels(models: CompareModel[], catalog: GatewayModel[]) {
   return models.map((model) => {
     const match = catalog.find((item) => item.id === model.id);
-    return match ? { ...model, label: match.name } : model;
+    return match
+      ? {
+          ...model,
+          label: getModelLabel(match.id),
+          config: buildModelConfig(match.id),
+        }
+      : {
+          ...model,
+          label: getModelLabel(model),
+          config: model.config ?? buildModelConfig(model.id),
+        };
   });
 }
 
@@ -173,7 +189,44 @@ function looksLikeHtml(value: string) {
   return /<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(value);
 }
 
+/**
+ * Models sometimes emit CSS url() syntax inside HTML href/src attributes, e.g.
+ *   <link href="url('https://fonts.googleapis.com/...')">
+ * Without allow-same-origin on the sandbox, srcdoc resolves relative paths
+ * against the parent page origin, turning these into 404s on our own server.
+ * Strip the url() wrapper so the attribute value is a plain URL, regardless
+ * of whether the model used single quotes, double quotes, or extra whitespace.
+ */
+function sanitizePreviewMarkup(markup: string): string {
+  return markup.replace(
+    /\b(href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+    (match, attr, doubleQuoted, singleQuoted, unquoted) => {
+      const rawValue = doubleQuoted ?? singleQuoted ?? unquoted ?? "";
+      const sanitizedValue = rawValue.replace(
+        /^\s*url\(\s*(['"]?)(https?:[^'")\s]+)\1\s*\)\s*$/i,
+        "$2",
+      );
+
+      if (sanitizedValue === rawValue) {
+        return match;
+      }
+
+      if (doubleQuoted != null) {
+        return `${attr}="${sanitizedValue}"`;
+      }
+
+      if (singleQuoted != null) {
+        return `${attr}='${sanitizedValue}'`;
+      }
+
+      return `${attr}=${sanitizedValue}`;
+    },
+  );
+}
+
 function createPreviewSrcDoc(markup: string, previewId: string) {
+  const sanitized = sanitizePreviewMarkup(markup);
+  markup = sanitized;
   const previewBridge = `
 <script>
 (() => {
@@ -404,10 +457,12 @@ function ModelPicker({
         type="button"
       >
         <span className="block text-sm font-medium">
-          {selectedCatalogModel?.name ?? value.label}
+          {selectedCatalogModel ? getModelLabel(selectedCatalogModel.id) : value.label}
         </span>
         <span className="mt-1 block truncate text-xs text-(--muted)">
-          {selectedCatalogModel?.ownedBy ?? "Unknown provider"} · {value.id}
+          {selectedCatalogModel?.releasedAt
+            ? `Released ${formatMonthYear(selectedCatalogModel.releasedAt)}`
+            : value.id}
         </span>
       </button>
 
@@ -451,10 +506,7 @@ function ModelPicker({
                           <span className="flex items-start justify-between gap-3">
                             <span className="block min-w-0">
                               <span className="block text-sm font-medium">
-                                {entry.name}
-                              </span>
-                              <span className="mt-1 block text-xs text-(--muted)">
-                                {entry.id}
+                                {getModelLabel(entry.id)}
                               </span>
                             </span>
                             <span className="shrink-0 rounded-full border border-(--line) px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)">
@@ -758,7 +810,7 @@ export function BuildOffClient() {
               const match = nextCatalog.find(
                 (model) => model.id === result.modelId,
               );
-              return match ? { ...result, label: match.name } : result;
+              return match ? { ...result, label: getModelLabel(match.id) } : result;
             }),
           );
         }
@@ -771,7 +823,7 @@ export function BuildOffClient() {
               const match = nextCatalog.find(
                 (model) => model.id === result.modelId,
               );
-              return match ? { ...result, label: match.name } : result;
+              return match ? { ...result, label: getModelLabel(match.id) } : result;
             }),
           })),
         );

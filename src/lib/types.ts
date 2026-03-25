@@ -1,6 +1,7 @@
 export type CompareModel = {
   id: string;
   label: string;
+  config?: string;
 };
 
 export type TokenPricingTier = {

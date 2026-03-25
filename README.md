@@ -60,7 +60,7 @@ Edit `.env.local`:
 
 ```env
 # Required
-BETTER_AUTH_URL=http://localhost:3000
+BETTER_AUTH_URL=http://localhost:4004
 BETTER_AUTH_SECRET=<openssl rand -hex 32>
 AI_GATEWAY_API_KEY=your_vercel_ai_gateway_key
 DATABASE_URL=postgres://user:pass@host:5432/dbname
@@ -77,7 +77,7 @@ AWS_REGION=auto
 TIGRIS_BUCKET=llm-battle
 ```
 
-> **GitHub OAuth callback URL:** `http://localhost:3000/api/auth/callback/github`
+> **GitHub OAuth callback URL:** `http://localhost:4004/api/auth/callback/github`
 
 ### 3. Run the dev server
 
@@ -85,7 +85,7 @@ TIGRIS_BUCKET=llm-battle
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:4004](http://localhost:4004).
 
 ---
 
