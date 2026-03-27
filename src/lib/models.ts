@@ -129,6 +129,12 @@ export function isVisionCapableModel(model: Pick<GatewayModel, "type" | "tags"> 
   return model.supportsImageInput || model.tags.includes("vision") || model.tags.includes("file-input");
 }
 
+export function supportsAgenticModel(
+  model: Pick<GatewayModel, "supportsToolCalling" | "supportsReasoning">,
+) {
+  return model.supportsToolCalling || model.supportsReasoning;
+}
+
 export function toCompareModel(model: Pick<GatewayModel, "id" | "name">): CompareModel {
   return {
     id: model.id,

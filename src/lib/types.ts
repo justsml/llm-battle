@@ -56,6 +56,8 @@ export type GatewayModel = {
   contextWindow?: number;
   maxTokens?: number;
   supportsImageInput: boolean;
+  supportsToolCalling: boolean;
+  supportsReasoning: boolean;
   pricing: GatewayModelPricing;
 };
 
@@ -84,7 +86,35 @@ export type ModelPerformanceSnapshot = {
   runtimeMs?: number;
 };
 
+export type ModelToolStats = {
+  calls: number;
+  errors: number;
+  totalDurationMs?: number;
+  averageDurationMs?: number;
+  lastDurationMs?: number;
+};
+
+export type ModelExecutionStats = {
+  passCount?: number;
+  stepCount?: number;
+  toolCallCount?: number;
+  toolErrorCount?: number;
+  textDeltaCount?: number;
+  outputChars?: number;
+  tokensPerSecond?: number;
+  tools?: Record<string, ModelToolStats>;
+};
+
 export type ModelStatus = "idle" | "streaming" | "done" | "error";
+
+export type OutputVoteValue = -1 | 1;
+
+export type ModelVoteSummary = {
+  score: number;
+  upvotes: number;
+  downvotes: number;
+  userVote?: OutputVoteValue;
+};
 
 export type ModelResult = {
   modelId: string;
@@ -101,9 +131,11 @@ export type ModelResult = {
   responseId?: string;
   usage?: ModelUsageSnapshot;
   costs?: ModelCostSnapshot;
+  stats?: ModelExecutionStats;
   outputUrl?: string;
   outputObjectKey?: string;
   outputContentType?: string;
+  vote?: ModelVoteSummary;
 };
 
 export type SavedRun = {

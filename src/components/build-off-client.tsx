@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import {
   type CSSProperties,
   useDeferredValue,
@@ -19,6 +20,7 @@ import {
   getModelConfig,
   getModelLabel,
   parseModelConfig,
+  supportsAgenticModel,
   toCompareModel,
 } from "@/lib/models";
 import type {
@@ -26,6 +28,7 @@ import type {
   CompareModel,
   GatewayModel,
   ModelResult,
+  OutputVoteValue,
   SavedRun,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -36,10 +39,14 @@ const LOCAL_RECENT_MODELS_KEY = "build-off:recent-models:v1";
 const MIN_MODEL_CARDS = 2;
 const MAX_MODEL_CARDS = 12;
 const RECENT_MODEL_LIMIT = 24;
+const LIVE_TPS_WINDOW_MS = 2500;
+const LIVE_TPS_MIN_WINDOW_MS = 400;
+const ESTIMATED_CHARS_PER_TOKEN = 4;
 
 type OutputMode = "preview" | "raw";
 type CardSize = "s" | "m" | "l" | "xl";
 type ModelCardModeKey = "standard" | "agentic";
+type ModelSortMode = "released" | "name" | "provider";
 
 type PreviewConsoleEntry = {
   level: string;
@@ -60,6 +67,12 @@ type AgenticCardState = {
   tools: Record<string, AgenticToolState>;
 };
 
+type LiveStreamMetricSnapshot = {
+  outputTokens?: number;
+  totalTokens?: number;
+  peakTokensPerSecond?: number;
+};
+
 type ModelCardWorkspaceState = {
   activeRunId: string | null;
   selectedModels: CompareModel[];
@@ -72,7 +85,7 @@ type ModelCardWorkspaceState = {
 
 const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
   enabled: false,
-  maxTurns: 4,
+  maxTurns: 8,
   todoListTool: false,
 };
 
@@ -143,6 +156,11 @@ function createEmptyResult(model: CompareModel): ModelResult {
     label: model.label,
     text: "",
     status: "idle",
+    vote: {
+      score: 0,
+      upvotes: 0,
+      downvotes: 0,
+    },
   };
 }
 
@@ -205,6 +223,55 @@ function formatMonthYear(value?: string) {
   }).format(new Date(value));
 }
 
+function formatTimeAgo(value?: string) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+  const timestamp = date.getTime();
+  if (Number.isNaN(timestamp)) return "—";
+
+  const diffMs = timestamp - Date.now();
+  const diffSeconds = Math.round(diffMs / 1000);
+  const relativeFormatter = new Intl.RelativeTimeFormat(undefined, {
+    numeric: "auto",
+  });
+
+  const ranges = [
+    { unit: "year", seconds: 60 * 60 * 24 * 365 },
+    { unit: "month", seconds: 60 * 60 * 24 * 30 },
+    { unit: "week", seconds: 60 * 60 * 24 * 7 },
+    { unit: "day", seconds: 60 * 60 * 24 },
+    { unit: "hour", seconds: 60 * 60 },
+    { unit: "minute", seconds: 60 },
+  ] as const;
+
+  for (const range of ranges) {
+    if (Math.abs(diffSeconds) >= range.seconds) {
+      return relativeFormatter.format(
+        Math.round(diffSeconds / range.seconds),
+        range.unit,
+      );
+    }
+  }
+
+  return relativeFormatter.format(diffSeconds, "second");
+}
+
+function getCollapsedModelLabel(model: Pick<GatewayModel, "id"> | string) {
+  const label = getModelLabel(typeof model === "string" ? model : model.id);
+  const simplified = label.split("/").filter(Boolean).at(-1);
+  return simplified ?? label;
+}
+
+function formatVoteScore(score: number) {
+  if (score > 0) return `+${score}`;
+  return String(score);
+}
+
+function getVoteKey(runId: string, modelIndex: number) {
+  return `${runId}:${modelIndex}`;
+}
+
 function statusTone(status: ModelResult["status"]) {
   switch (status) {
     case "streaming":
@@ -246,15 +313,6 @@ function syncModelLabels(models: CompareModel[], catalog: GatewayModel[]) {
           config: getModelConfig(model),
         };
   });
-}
-
-function groupModelsByProvider(models: GatewayModel[]) {
-  return models.reduce<Record<string, GatewayModel[]>>((groups, model) => {
-    const key = `${getModelSourceLabel(model)} / ${model.ownedBy}`;
-    groups[key] ??= [];
-    groups[key].push(model);
-    return groups;
-  }, {});
 }
 
 function getModelSourceLabel(model: Pick<CompareModel, "id" | "config"> | GatewayModel) {
@@ -339,20 +397,36 @@ function shuffleItems<T>(items: T[]) {
   return next;
 }
 
-function getVisionModels(catalog: GatewayModel[]) {
-  return catalog.filter((model) => model.supportsImageInput);
+function getSelectableCatalogModels(
+  catalog: GatewayModel[],
+  agenticEnabled: boolean,
+) {
+  return catalog.filter(
+    (model) =>
+      model.supportsImageInput
+      && (!agenticEnabled || supportsAgenticModel(model)),
+  );
 }
 
-function getMaxSelectableModelCards(catalog: GatewayModel[]) {
+function getMaxSelectableModelCards(
+  catalog: GatewayModel[],
+  agenticEnabled: boolean,
+) {
   if (!catalog.length) return MAX_MODEL_CARDS;
-  return Math.min(MAX_MODEL_CARDS, getVisionModels(catalog).length);
+  return Math.min(
+    MAX_MODEL_CARDS,
+    getSelectableCatalogModels(catalog, agenticEnabled).length,
+  );
 }
 
-function getMinSelectableModelCards(catalog: GatewayModel[]) {
+function getMinSelectableModelCards(
+  catalog: GatewayModel[],
+  agenticEnabled: boolean,
+) {
   if (!catalog.length) return MIN_MODEL_CARDS;
   return Math.min(
     MIN_MODEL_CARDS,
-    Math.max(1, getMaxSelectableModelCards(catalog)),
+    Math.max(1, getMaxSelectableModelCards(catalog, agenticEnabled)),
   );
 }
 
@@ -361,11 +435,12 @@ function getPreferredAvailableModels(
   selectedConfigs: string[],
   count: number,
   recentConfigs: string[],
+  agenticEnabled: boolean,
 ) {
   if (count <= 0) return [];
 
   const usedConfigs = new Set(selectedConfigs);
-  const visionModels = getVisionModels(catalog);
+  const visionModels = getSelectableCatalogModels(catalog, agenticEnabled);
   const modelsByConfig = new Map(
     visionModels.map((model) => [model.config, model]),
   );
@@ -398,6 +473,62 @@ function getPreferredAvailableModels(
   }
 
   return nextModels;
+}
+
+function getReleasedAtTime(model: GatewayModel) {
+  if (!model.releasedAt) return Number.NEGATIVE_INFINITY;
+  const timestamp = Date.parse(model.releasedAt);
+  return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+}
+
+function sortModels(models: GatewayModel[], mode: ModelSortMode) {
+  return [...models].sort((left, right) => {
+    if (mode === "released") {
+      const releasedDelta = getReleasedAtTime(right) - getReleasedAtTime(left);
+      if (releasedDelta !== 0) return releasedDelta;
+    }
+
+    if (mode === "provider") {
+      const providerOrder = getModelSourceLabel(left).localeCompare(
+        getModelSourceLabel(right),
+      );
+      if (providerOrder !== 0) return providerOrder;
+
+      const ownerOrder = left.ownedBy.localeCompare(right.ownedBy);
+      if (ownerOrder !== 0) return ownerOrder;
+    }
+
+    const nameOrder = left.name.localeCompare(right.name);
+    if (nameOrder !== 0) return nameOrder;
+
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function buildModelSections(models: GatewayModel[], mode: ModelSortMode) {
+  if (mode === "provider") {
+    const groups = sortModels(models, mode).reduce<Record<string, GatewayModel[]>>(
+      (result, model) => {
+        const key = `${getModelSourceLabel(model)} / ${model.ownedBy}`;
+        result[key] ??= [];
+        result[key].push(model);
+        return result;
+      },
+      {},
+    );
+
+    return Object.entries(groups).map(([label, sectionModels]) => ({
+      key: label,
+      label,
+      models: sectionModels,
+    }));
+  }
+
+  return [{
+    key: mode,
+    label: mode === "released" ? "Newest first" : "A-Z",
+    models: sortModels(models, mode),
+  }];
 }
 
 function looksLikeHtmlDocument(value: string) {
@@ -757,6 +888,12 @@ function formatTokenCount(value?: number) {
   return new Intl.NumberFormat().format(value);
 }
 
+function formatLiveTokenCount(value: number | undefined, estimated = false) {
+  const formatted = formatTokenCount(value);
+  if (!estimated || value == null) return formatted;
+  return `~${formatted}`;
+}
+
 function formatCost(value?: number) {
   if (value == null) return "—";
   if (value === 0) return "$0.000000";
@@ -767,6 +904,18 @@ function formatCost(value?: number) {
     minimumFractionDigits: 4,
     maximumFractionDigits: 6,
   }).format(value);
+}
+
+function formatTokensPerSecond(value?: number) {
+  if (value == null) return "—";
+  return `${new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2,
+  }).format(value)}/s`;
+}
+
+function estimateOutputTokensFromChars(charCount: number) {
+  if (charCount <= 0) return 0;
+  return Math.max(1, Math.round(charCount / ESTIMATED_CHARS_PER_TOKEN));
 }
 
 function formatRatePerMillion(value?: number) {
@@ -780,6 +929,15 @@ function formatRatePerMillion(value?: number) {
   }).format(value * 1_000_000);
 }
 
+function getModelPricingSummary(model: GatewayModel) {
+  const parts = [
+    model.pricing.input != null ? `In ${formatRatePerMillion(model.pricing.input)}/M` : null,
+    model.pricing.output != null ? `Out ${formatRatePerMillion(model.pricing.output)}/M` : null,
+  ].filter((value): value is string => value != null);
+
+  return parts.length ? parts.join(" • ") : "Pricing unavailable";
+}
+
 function formatResultStatus(result: ModelResult) {
   if (result.status === "streaming") return "Streaming";
   if (result.status === "done") return "Complete";
@@ -789,6 +947,12 @@ function formatResultStatus(result: ModelResult) {
 
 function getToolLabel(toolName: string) {
   return TOOL_LABELS[toolName] ?? toolName.replaceAll("_", " ");
+}
+
+function readEventStats(event: Record<string, unknown>): ModelResult["stats"] {
+  return typeof event.stats === "object" && event.stats
+    ? (event.stats as ModelResult["stats"])
+    : undefined;
 }
 
 function createAgenticCardState(options: AgenticOptions): AgenticCardState {
@@ -861,6 +1025,9 @@ type ModelPickerProps = {
   value: CompareModel;
   catalog: GatewayModel[];
   disabled: boolean;
+  agenticEnabled: boolean;
+  sortMode: ModelSortMode;
+  onSortModeChange: (mode: ModelSortMode) => void;
   selectedModels: CompareModel[];
   recentModelConfigs: string[];
   onSelect: (modelConfig: string) => void;
@@ -872,6 +1039,9 @@ function ModelPicker({
   value,
   catalog,
   disabled,
+  agenticEnabled,
+  sortMode,
+  onSortModeChange,
   selectedModels,
   recentModelConfigs,
   onSelect,
@@ -880,16 +1050,15 @@ function ModelPicker({
 }: ModelPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>();
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const selectedCatalogModel =
     catalog.find((model) => model.config === getModelConfig(value)) ?? null;
-  const filteredModels = catalog.filter(
-    (model) => model.supportsImageInput && modelMatchesQuery(model, query),
+  const filteredModels = getSelectableCatalogModels(catalog, agenticEnabled).filter(
+    (model) => modelMatchesQuery(model, query),
   );
-  const filteredGroups = groupModelsByProvider(filteredModels);
+  const filteredSections = buildModelSections(filteredModels, sortMode);
   const selectedProvider = selectedCatalogModel
     ? getModelSourceLabel(selectedCatalogModel)
     : getModelSourceLabel(value);
@@ -897,7 +1066,7 @@ function ModelPicker({
   const selectedConfigs = new Set(selectedModels.map((model) => getModelConfig(model)));
   const triggerClassName =
     variant === "header"
-      ? "min-w-0 flex-1 rounded-[1rem] border px-3 py-2.5 text-left transition hover:bg-(--card-active)"
+      ? "w-full min-w-0 rounded-[1rem] border px-3 py-2.5 text-left transition hover:bg-(--card-active)"
       : "w-full rounded-[1rem] border px-3 py-3 text-left transition hover:bg-(--card-active)";
 
   useEffect(() => {
@@ -905,37 +1074,6 @@ function ModelPicker({
 
     searchRef.current?.focus();
   }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen || variant !== "header") return;
-
-    const root = rootRef.current;
-    const card = root?.closest(".build-card");
-    if (!(root instanceof HTMLElement) || !(card instanceof HTMLElement)) return;
-
-    const updateDropdownGeometry = () => {
-      const rootRect = root.getBoundingClientRect();
-      const cardRect = card.getBoundingClientRect();
-
-      setDropdownStyle({
-        left: `${cardRect.left - rootRect.left}px`,
-        width: `${cardRect.width}px`,
-      });
-    };
-
-    const frameId = window.requestAnimationFrame(updateDropdownGeometry);
-
-    const resizeObserver = new ResizeObserver(updateDropdownGeometry);
-    resizeObserver.observe(root);
-    resizeObserver.observe(card);
-    window.addEventListener("resize", updateDropdownGeometry);
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      resizeObserver.disconnect();
-      window.removeEventListener("resize", updateDropdownGeometry);
-    };
-  }, [isOpen, variant]);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -963,7 +1101,10 @@ function ModelPicker({
   }, [onOpenChange]);
 
   return (
-    <div className={cn("relative", isOpen && "z-40")} ref={rootRef}>
+    <div
+      className={cn("relative", variant === "header" && "min-w-0 flex-1", isOpen && "z-40")}
+      ref={rootRef}
+    >
       <button
         className={cn(
           triggerClassName,
@@ -985,49 +1126,63 @@ function ModelPicker({
         type="button"
       >
         <span className="block truncate text-sm font-medium">
-          {selectedCatalogModel ? getModelLabel(selectedCatalogModel.id) : value.label}
+          {selectedCatalogModel
+            ? getCollapsedModelLabel(selectedCatalogModel)
+            : getCollapsedModelLabel(value.id)}
         </span>
-        <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-(--muted)">
-          <span
-            className={cn(
-              "rounded-full border px-2 py-0.5 font-semibold uppercase tracking-[0.14em]",
-              selectedProviderTone.chip,
-            )}
-          >
-            {selectedProvider}
-          </span>
-          <span className="truncate">
-            {selectedCatalogModel
-              ? `${selectedCatalogModel.ownedBy} · ${selectedCatalogModel.releasedAt ? `Released ${formatMonthYear(selectedCatalogModel.releasedAt)}` : selectedCatalogModel.id}`
-              : value.id}
-          </span>
+        <span className="mt-1 block truncate text-xs text-(--muted)">
+          {selectedCatalogModel
+            ? agenticEnabled && !supportsAgenticModel(selectedCatalogModel)
+              ? "Unavailable in agentic mode"
+              : selectedCatalogModel.releasedAt
+                ? `Released ${formatTimeAgo(selectedCatalogModel.releasedAt)}`
+                : selectedCatalogModel.id
+            : value.id}
         </span>
       </button>
 
       {isOpen ? (
         <div
-          className="absolute z-[90] mt-2 w-full overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--panel) shadow-[0_24px_80px_color-mix(in_oklch,var(--foreground)_18%,transparent)] backdrop-blur-xl"
-          style={dropdownStyle}
+          className="absolute left-0 z-[90] mt-2 w-full overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--panel) shadow-[0_24px_80px_color-mix(in_oklch,var(--foreground)_18%,transparent)] backdrop-blur-xl"
         >
           <div className="sticky top-0 z-10 border-b border-(--line) bg-(--panel-strong) p-3">
-            <input
-              ref={searchRef}
-              className="w-full rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 text-sm outline-none transition focus:border-(--foreground)"
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Filter by name, provider, id, or tag"
-              value={query}
-            />
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                ref={searchRef}
+                className="w-full rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 text-sm outline-none transition focus:border-(--foreground)"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Filter by name, provider, id, or tag"
+                value={query}
+              />
+              <select
+                aria-label="Sort models"
+                className="rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 text-sm outline-none transition focus:border-(--foreground)"
+                onChange={(event) =>
+                  onSortModeChange(event.target.value as ModelSortMode)
+                }
+                value={sortMode}
+              >
+                <option value="released">Release date</option>
+                <option value="name">Name</option>
+                <option value="provider">Provider</option>
+              </select>
+            </div>
+            {agenticEnabled ? (
+              <p className="mt-2 px-1 text-[11px] text-(--muted)">
+                Agentic mode only shows vision models with tool calling or reasoning support.
+              </p>
+            ) : null}
           </div>
 
           <div className="max-h-80 overflow-y-auto p-2">
-            {Object.keys(filteredGroups).length ? (
-              Object.entries(filteredGroups).map(([provider, models]) => (
-                <div className="mb-2 last:mb-0" key={provider}>
+            {filteredSections.length ? (
+              filteredSections.map((section) => (
+                <div className="mb-2 last:mb-0" key={section.key}>
                   <p className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-(--muted)">
-                    {provider}
+                    {section.label}
                   </p>
                   <div className="space-y-1">
-                    {models.map((entry) => {
+                    {section.models.map((entry) => {
                       const providerTone = getProviderTone(
                         getModelSourceLabel(entry),
                       );
@@ -1072,20 +1227,35 @@ function ModelPicker({
                                 <span className="truncate">
                                   {entry.ownedBy}
                                 </span>
+                                {entry.supportsToolCalling ? (
+                                  <span className="rounded-full border border-(--line) px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-(--muted)">
+                                    Tools
+                                  </span>
+                                ) : null}
+                                {entry.supportsReasoning ? (
+                                  <span className="rounded-full border border-(--line) px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-(--muted)">
+                                    Reasoning
+                                  </span>
+                                ) : null}
                                 {isSelectedElsewhere ? (
                                   <span className="rounded-full border border-(--line) px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-(--muted)">
                                     In use
                                   </span>
                                 ) : null}
                               </span>
+                              <span className="mt-1 block text-[11px] text-(--muted)">
+                                {getModelPricingSummary(entry)}
+                              </span>
                             </span>
-                            <span
-                              className={cn(
-                                "shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)",
-                                providerTone.meta,
-                              )}
-                            >
-                              {formatMonthYear(entry.releasedAt)}
+                            <span className="flex shrink-0 flex-col items-end gap-1">
+                              <span
+                                className={cn(
+                                  "rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)",
+                                  providerTone.meta,
+                                )}
+                              >
+                                {formatMonthYear(entry.releasedAt)}
+                              </span>
                             </span>
                           </span>
                         </button>
@@ -1230,6 +1400,9 @@ export function BuildOffClient() {
   const [results, setResults] = useState<ModelResult[]>(
     createEmptyResults(DEFAULT_MODELS),
   );
+  const [liveStreamMetrics, setLiveStreamMetrics] = useState<
+    Record<string, LiveStreamMetricSnapshot>
+  >({});
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [modelsError, setModelsError] = useState("");
@@ -1238,6 +1411,7 @@ export function BuildOffClient() {
   const [cardSize, setCardSize] = useState<CardSize>("m");
   const [freshModelIds, setFreshModelIds] = useState<string[]>([]);
   const [recentModelConfigs, setRecentModelConfigs] = useState<string[]>([]);
+  const [modelSortMode, setModelSortMode] = useState<ModelSortMode>("released");
   const [openPickerIndex, setOpenPickerIndex] = useState<number | null>(null);
   const [dragSourceIndex, setDragSourceIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -1248,6 +1422,7 @@ export function BuildOffClient() {
   const [isAuthActionPending, setIsAuthActionPending] = useState(false);
   const [authError, setAuthError] = useState("");
   const [outputMode, setOutputMode] = useState<OutputMode>("preview");
+  const [votePendingByKey, setVotePendingByKey] = useState<Record<string, boolean>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>(
     {},
   );
@@ -1271,6 +1446,16 @@ export function BuildOffClient() {
   }));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewFrameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
+  const liveStreamMetricBuffersRef = useRef<
+    Record<
+      string,
+      {
+        outputChars: number;
+        points: Array<{ timestampMs: number; outputTokens: number }>;
+        peakTokensPerSecond?: number;
+      }
+    >
+  >({});
   const resultsRef = useRef<ModelResult[]>(results);
   const previewOverridesRef = useRef<Record<string, string>>({});
   const previewCommandResolvers = useRef<
@@ -1291,6 +1476,14 @@ export function BuildOffClient() {
   const signedInUser = sessionData?.user ?? null;
   const signedInUserId = signedInUser?.id ?? null;
   const currentModelCardModeKey = getModelCardModeKey(agenticOptions.enabled);
+  const maxSelectableCards = getMaxSelectableModelCards(
+    catalog,
+    agenticOptions.enabled,
+  );
+  const minSelectableCards = getMinSelectableModelCards(
+    catalog,
+    agenticOptions.enabled,
+  );
 
   useEffect(() => {
     resultsRef.current = results;
@@ -1299,6 +1492,55 @@ export function BuildOffClient() {
   useEffect(() => {
     previewOverridesRef.current = previewOverrides;
   }, [previewOverrides]);
+
+  useEffect(() => {
+    if (!catalog.length) return;
+
+    const selectableConfigs = new Set(
+      getSelectableCatalogModels(catalog, agenticOptions.enabled).map(
+        (model) => model.config,
+      ),
+    );
+    const retained = selectedModels.filter((model, index, models) => {
+      const config = getModelConfig(model);
+      return (
+        selectableConfigs.has(config)
+        && models.findIndex((entry) => getModelConfig(entry) === config) === index
+      );
+    });
+
+    const desiredCount = Math.min(selectedModels.length, maxSelectableCards);
+    if (retained.length === selectedModels.length && retained.length === desiredCount) {
+      return;
+    }
+
+    const additions = getPreferredAvailableModels(
+      catalog,
+      retained.map((model) => getModelConfig(model)),
+      Math.max(0, desiredCount - retained.length),
+      recentModelConfigs,
+      agenticOptions.enabled,
+    ).map(toCompareModel);
+    const nextModels = [...retained, ...additions].slice(0, desiredCount);
+
+    if (!nextModels.length) return;
+
+    setSelectedModels(nextModels);
+    setResults((current) => {
+      const nextById = new Map(current.map((result) => [result.modelId, result]));
+
+      return nextModels.map((model) => {
+        const existing = nextById.get(model.id);
+        return existing ? { ...existing, label: model.label } : createEmptyResult(model);
+      });
+    });
+  }, [
+    agenticOptions.enabled,
+    catalog,
+    maxSelectableCards,
+    recentModelConfigs,
+    selectedModels,
+  ]);
 
   function buildCurrentModelCardWorkspaceState(): ModelCardWorkspaceState {
     return {
@@ -1515,14 +1757,21 @@ export function BuildOffClient() {
 
         setCatalog(nextCatalog);
 
-        const resolveDraftModels = (configs?: string[]) =>
+        const resolveDraftModels = (
+          configs: string[] | undefined,
+          modeKey: ModelCardModeKey,
+        ) =>
           (configs ?? [])
             .map((config) =>
               nextCatalog.find((model) => model.config === config),
             )
             .filter(
               (model): model is GatewayModel =>
-                model != null && model.supportsImageInput,
+                model != null
+                && getSelectableCatalogModels(
+                  nextCatalog,
+                  modeKey === "agentic",
+                ).some((entry) => entry.config === model.config),
             )
             .filter(
               (model, index, models) =>
@@ -1538,9 +1787,11 @@ export function BuildOffClient() {
         const selectedFromDraftByMode = {
           standard: resolveDraftModels(
             pendingDraftModelConfigsByModeRef.current?.standard,
+            "standard",
           ),
           agentic: resolveDraftModels(
             pendingDraftModelConfigsByModeRef.current?.agentic,
+            "agentic",
           ),
         };
 
@@ -1811,11 +2062,99 @@ export function BuildOffClient() {
     });
   }
 
+  function resetLiveStreamMetric(modelId: string) {
+    delete liveStreamMetricBuffersRef.current[modelId];
+    setLiveStreamMetrics((current) => {
+      if (!(modelId in current)) return current;
+
+      const next = { ...current };
+      delete next[modelId];
+      return next;
+    });
+  }
+
+  function resetAllLiveStreamMetrics() {
+    liveStreamMetricBuffersRef.current = {};
+    setLiveStreamMetrics({});
+  }
+
+  function applyLiveStreamDelta(modelId: string, delta: string) {
+    if (!delta) return;
+
+    const now = Date.now();
+    const existing = liveStreamMetricBuffersRef.current[modelId] ?? {
+      outputChars: 0,
+      points: [],
+      peakTokensPerSecond: undefined,
+    };
+
+    existing.outputChars += delta.length;
+    const outputTokens = estimateOutputTokensFromChars(existing.outputChars);
+    existing.points.push({ timestampMs: now, outputTokens });
+    existing.points = existing.points.filter(
+      (point) => now - point.timestampMs <= LIVE_TPS_WINDOW_MS,
+    );
+
+    const oldestPoint = existing.points[0];
+    const elapsedMs = oldestPoint ? now - oldestPoint.timestampMs : 0;
+    const peakTokensPerSecond =
+      elapsedMs >= LIVE_TPS_MIN_WINDOW_MS
+        ? Math.max(
+            existing.peakTokensPerSecond ?? 0,
+            (outputTokens - oldestPoint.outputTokens) / (elapsedMs / 1000),
+          )
+        : existing.peakTokensPerSecond;
+
+    existing.peakTokensPerSecond = peakTokensPerSecond;
+    liveStreamMetricBuffersRef.current[modelId] = existing;
+
+    setLiveStreamMetrics((current) => ({
+      ...current,
+      [modelId]: {
+        outputTokens,
+        peakTokensPerSecond,
+      },
+    }));
+  }
+
+  function syncLiveStreamMetricFromResult(result: ModelResult) {
+    const peakTokensPerSecond =
+      liveStreamMetricBuffersRef.current[result.modelId]?.peakTokensPerSecond ??
+      result.stats?.tokensPerSecond;
+
+    setLiveStreamMetrics((current) => ({
+      ...current,
+      [result.modelId]: {
+        outputTokens: result.usage?.outputTokens,
+        totalTokens: result.usage?.totalTokens,
+        peakTokensPerSecond,
+      },
+    }));
+  }
+
+  function getDisplayOutputMetrics(result: ModelResult) {
+    const liveMetric = liveStreamMetrics[result.modelId];
+    const outputTokens = result.usage?.outputTokens ?? liveMetric?.outputTokens;
+    const totalTokens = result.usage?.totalTokens ?? liveMetric?.totalTokens;
+    const peakTokensPerSecond =
+      liveMetric?.peakTokensPerSecond ?? result.stats?.tokensPerSecond;
+
+    return {
+      outputTokens,
+      totalTokens,
+      peakTokensPerSecond,
+      outputEstimated:
+        result.usage?.outputTokens == null && liveMetric?.outputTokens != null,
+      totalEstimated:
+        result.usage?.totalTokens == null && liveMetric?.totalTokens != null,
+    };
+  }
+
   useEffect(() => {
     if (!catalog.length) return;
 
-    const minCards = getMinSelectableModelCards(catalog);
-    const maxCards = getMaxSelectableModelCards(catalog);
+    const minCards = getMinSelectableModelCards(catalog, agenticOptions.enabled);
+    const maxCards = getMaxSelectableModelCards(catalog, agenticOptions.enabled);
 
     if (
       selectedModels.length >= minCards &&
@@ -1835,13 +2174,14 @@ export function BuildOffClient() {
       selectedModels.map((model) => getModelConfig(model)),
       minCards - selectedModels.length,
       recentModelConfigs,
+      agenticOptions.enabled,
     ).map(toCompareModel);
 
     if (!additions.length) return;
 
     setSelectedModels((current) => [...current, ...additions]);
     setResults((current) => [...current, ...additions.map(createEmptyResult)]);
-  }, [catalog, recentModelConfigs, selectedModels]);
+  }, [agenticOptions.enabled, catalog, recentModelConfigs, selectedModels]);
 
   useEffect(() => {
     const onPaste = async (event: ClipboardEvent) => {
@@ -1872,6 +2212,62 @@ export function BuildOffClient() {
     setRuns((current) =>
       current.map((run) => (run.id === runId ? updater(run) : run)),
     );
+  }
+
+  function replaceRunId(previousRunId: string, nextRunId: string) {
+    if (previousRunId === nextRunId) return;
+
+    setRuns((current) =>
+      current.map((run) =>
+        run.id === previousRunId
+          ? {
+              ...run,
+              id: nextRunId,
+            }
+          : run,
+      ),
+    );
+    setActiveRunId((current) =>
+      current === previousRunId ? nextRunId : current,
+    );
+  }
+
+  function applyVoteSummaryToResult(
+    result: ModelResult,
+    summary: {
+      score: number;
+      upvotes: number;
+      downvotes: number;
+      userVote?: OutputVoteValue;
+    },
+  ): ModelResult {
+    return {
+      ...result,
+      vote: {
+        score: summary.score,
+        upvotes: summary.upvotes,
+        downvotes: summary.downvotes,
+        userVote: summary.userVote,
+      },
+    };
+  }
+
+  function applyVoteSummaryToRun(
+    runId: string,
+    modelIndex: number,
+    summary: {
+      score: number;
+      upvotes: number;
+      downvotes: number;
+      userVote?: OutputVoteValue;
+    },
+  ) {
+    updateRun(runId, (existing) => ({
+      ...existing,
+      results: existing.results.map((result, index) =>
+        index === modelIndex ? applyVoteSummaryToResult(result, summary) : result,
+      ),
+    }));
   }
 
   function getPreviewIdForModelId(modelId: string) {
@@ -2176,6 +2572,7 @@ export function BuildOffClient() {
         responseId: undefined,
         usage: undefined,
         costs: undefined,
+        stats: readEventStats(event),
       };
     }
 
@@ -2193,6 +2590,7 @@ export function BuildOffClient() {
         latencyMs:
           result.latencyMs ??
           (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+        stats: readEventStats(event) ?? result.stats,
       };
     }
 
@@ -2200,6 +2598,19 @@ export function BuildOffClient() {
       return {
         ...result,
         text: "",
+        stats: readEventStats(event) ?? result.stats,
+      };
+    }
+
+    if (
+      event.type === "agent-step" ||
+      event.type === "tool-call" ||
+      event.type === "tool-result" ||
+      event.type === "tool-error"
+    ) {
+      return {
+        ...result,
+        stats: readEventStats(event) ?? result.stats,
       };
     }
 
@@ -2237,6 +2648,7 @@ export function BuildOffClient() {
           typeof event.costs === "object" && event.costs
             ? (event.costs as ModelResult["costs"])
             : result.costs,
+        stats: readEventStats(event) ?? result.stats,
       };
     }
 
@@ -2262,6 +2674,15 @@ export function BuildOffClient() {
           typeof event.runtimeMs === "number"
             ? event.runtimeMs
             : result.runtimeMs,
+        usage:
+          typeof event.usage === "object" && event.usage
+            ? (event.usage as ModelResult["usage"])
+            : result.usage,
+        costs:
+          typeof event.costs === "object" && event.costs
+            ? (event.costs as ModelResult["costs"])
+            : result.costs,
+        stats: readEventStats(event) ?? result.stats,
       };
     }
 
@@ -2285,6 +2706,7 @@ export function BuildOffClient() {
     setImageName(run.imageName);
     setSelectedModels(run.models);
     setResults(run.results);
+    resetAllLiveStreamMetrics();
     setAgenticActivity({});
     setPreviewErrors({});
     setPreviewToolErrors({});
@@ -2310,6 +2732,7 @@ export function BuildOffClient() {
           (config) =>
             config !== nextModelConfig && config !== currentModelConfig,
         ),
+        agenticOptions.enabled,
       )[0];
 
       if (fallbackModel) {
@@ -2322,7 +2745,14 @@ export function BuildOffClient() {
     }
 
     const nextModel = catalog.find((model) => model.config === resolvedModelConfig);
-    if (!nextModel || !nextModel.supportsImageInput) return;
+    if (
+      !nextModel
+      || !getSelectableCatalogModels(catalog, agenticOptions.enabled).some(
+        (model) => model.config === nextModel.config,
+      )
+    ) {
+      return;
+    }
 
     setRecentModelConfigs((current) =>
       mergeRecentModelConfigs(current, [nextModel.config]),
@@ -2332,6 +2762,8 @@ export function BuildOffClient() {
         currentIndex === index ? toCompareModel(nextModel) : model,
       ),
     );
+    resetLiveStreamMetric(selectedModels[index].id);
+    resetLiveStreamMetric(nextModel.id);
     setResults((current) =>
       current.map((result, currentIndex) =>
         currentIndex === index
@@ -2347,8 +2779,8 @@ export function BuildOffClient() {
   }
 
   function handleTargetPanelCount(nextCount: number) {
-    const minCards = getMinSelectableModelCards(catalog);
-    const maxCards = getMaxSelectableModelCards(catalog);
+    const minCards = getMinSelectableModelCards(catalog, agenticOptions.enabled);
+    const maxCards = getMaxSelectableModelCards(catalog, agenticOptions.enabled);
     const clampedCount = Math.max(minCards, Math.min(maxCards, nextCount));
 
     if (clampedCount === selectedModels.length) return;
@@ -2359,6 +2791,7 @@ export function BuildOffClient() {
         selectedModels.map((model) => getModelConfig(model)),
         clampedCount - selectedModels.length,
         recentModelConfigs,
+        agenticOptions.enabled,
       ).map(toCompareModel);
 
       if (!additions.length) return;
@@ -2378,8 +2811,14 @@ export function BuildOffClient() {
   }
 
   function handleRemovePanel(index: number) {
-    if (selectedModels.length <= getMinSelectableModelCards(catalog)) return;
+    if (
+      selectedModels.length
+      <= getMinSelectableModelCards(catalog, agenticOptions.enabled)
+    ) {
+      return;
+    }
 
+    resetLiveStreamMetric(selectedModels[index].id);
     setSelectedModels((current) =>
       current.filter((_, currentIndex) => currentIndex !== index),
     );
@@ -2430,6 +2869,112 @@ export function BuildOffClient() {
     setIsAuthActionPending(false);
   }
 
+  async function handleVote(modelIndex: number, vote: OutputVoteValue) {
+    if (!activeRunId) {
+      setErrorMessage("Wait for the run to finish saving before voting.");
+      return;
+    }
+
+    const voteKey = getVoteKey(activeRunId, modelIndex);
+    const currentVote = results[modelIndex]?.vote?.userVote;
+    const optimisticUserVote = currentVote === vote ? undefined : vote;
+    const currentSummary = results[modelIndex]?.vote ?? {
+      score: 0,
+      upvotes: 0,
+      downvotes: 0,
+    };
+    const optimisticSummary = {
+      score:
+        currentSummary.score -
+        (currentVote ?? 0) +
+        (optimisticUserVote ?? 0),
+      upvotes:
+        currentSummary.upvotes -
+        (currentVote === 1 ? 1 : 0) +
+        (optimisticUserVote === 1 ? 1 : 0),
+      downvotes:
+        currentSummary.downvotes -
+        (currentVote === -1 ? 1 : 0) +
+        (optimisticUserVote === -1 ? 1 : 0),
+      userVote: optimisticUserVote,
+    };
+
+    setVotePendingByKey((current) => ({
+      ...current,
+      [voteKey]: true,
+    }));
+    setResults((current) =>
+      current.map((result, index) =>
+        index === modelIndex
+          ? applyVoteSummaryToResult(result, optimisticSummary)
+          : result,
+      ),
+    );
+    applyVoteSummaryToRun(activeRunId, modelIndex, optimisticSummary);
+
+    try {
+      const response = await fetch("/api/runs/vote", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          runId: activeRunId,
+          modelIndex,
+          vote,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        summary?: {
+          score: number;
+          upvotes: number;
+          downvotes: number;
+          userVote?: OutputVoteValue;
+        };
+        error?: string;
+      } | null;
+
+      if (!response.ok || !payload?.summary) {
+        throw new Error(payload?.error ?? "Unable to save vote.");
+      }
+
+      setResults((current) =>
+        current.map((result, index) =>
+          index === modelIndex
+            ? applyVoteSummaryToResult(result, payload.summary!)
+            : result,
+        ),
+      );
+      applyVoteSummaryToRun(activeRunId, modelIndex, payload.summary);
+    } catch (error) {
+      setResults((current) =>
+        current.map((result, index) =>
+          index === modelIndex
+            ? applyVoteSummaryToResult(result, {
+                ...currentSummary,
+                userVote: currentVote,
+              })
+            : result,
+        ),
+      );
+      applyVoteSummaryToRun(activeRunId, modelIndex, {
+        ...currentSummary,
+        userVote: currentVote,
+      });
+      setErrorMessage(
+        error instanceof Error ? error.message : "Unable to save vote.",
+      );
+    } finally {
+      setVotePendingByKey((current) => {
+        if (!(voteKey in current)) return current;
+
+        const next = { ...current };
+        delete next[voteKey];
+        return next;
+      });
+    }
+  }
+
   async function handleCompare() {
     if (!signedInUser) {
       setErrorMessage("Sign in with GitHub to run a build-off.");
@@ -2441,8 +2986,8 @@ export function BuildOffClient() {
       return;
     }
 
-    const minCards = getMinSelectableModelCards(catalog);
-    const maxCards = getMaxSelectableModelCards(catalog);
+    const minCards = getMinSelectableModelCards(catalog, agenticOptions.enabled);
+    const maxCards = getMaxSelectableModelCards(catalog, agenticOptions.enabled);
 
     if (selectedModels.length < minCards || selectedModels.length > maxCards) {
       setErrorMessage(`Choose between ${minCards} and ${maxCards} models.`);
@@ -2451,12 +2996,17 @@ export function BuildOffClient() {
 
     const unsupported = selectedModels.find((model) => {
       const match = catalog.find((item) => item.config === getModelConfig(model));
-      return match ? !match.supportsImageInput : false;
+      return match
+        ? !match.supportsImageInput
+          || (agenticOptions.enabled && !supportsAgenticModel(match))
+        : agenticOptions.enabled;
     });
 
     if (unsupported) {
       setErrorMessage(
-        `${unsupported.label} does not support screenshot input in the Gateway catalog.`,
+        agenticOptions.enabled
+          ? `${unsupported.label} is not verified for agentic mode in the model catalog.`
+          : `${unsupported.label} does not support screenshot input in the Gateway catalog.`,
       );
       return;
     }
@@ -2477,6 +3027,7 @@ export function BuildOffClient() {
 
     setActiveRunId(runId);
     setResults(baseResults);
+    resetAllLiveStreamMetrics();
     if (agenticOptions.enabled) {
       setOutputMode("preview");
     }
@@ -2497,6 +3048,8 @@ export function BuildOffClient() {
     persistRun(run);
 
     void (async () => {
+      let persistedRunId = runId;
+
       try {
         const response = await fetch("/api/compare", {
           method: "POST",
@@ -2534,6 +3087,14 @@ export function BuildOffClient() {
           for (const line of lines) {
             if (!line.trim()) continue;
             const event = JSON.parse(line) as Record<string, unknown>;
+            if (
+              event.type === "ready" &&
+              typeof event.runId === "string" &&
+              event.runId
+            ) {
+              replaceRunId(persistedRunId, event.runId);
+              persistedRunId = event.runId;
+            }
             if (event.type === "tool-call") {
               void handleToolCallEvent(event);
             }
@@ -2542,6 +3103,9 @@ export function BuildOffClient() {
               typeof event.modelId === "string"
             ) {
               const modelId = event.modelId;
+              if (event.type === "start") {
+                resetLiveStreamMetric(modelId);
+              }
               const previewId = getPreviewIdForModelId(modelId);
               setPreviewOverrides((current) => {
                 if (!(modelId in current)) return current;
@@ -2586,13 +3150,28 @@ export function BuildOffClient() {
                 });
               }
             }
+            if (
+              event.type === "delta" &&
+              typeof event.modelId === "string" &&
+              typeof event.delta === "string"
+            ) {
+              applyLiveStreamDelta(event.modelId, event.delta);
+            }
             setAgenticActivity((current) =>
               applyEventToAgenticState(current, event),
             );
-            setResults((current) =>
-              current.map((item) => applyEventToResult(item, event)),
-            );
-            updateRun(runId, (existing) => ({
+            let finalizedResult: ModelResult | undefined;
+            setResults((current) => {
+              const next = current.map((item) => applyEventToResult(item, event));
+              if (event.type === "done" || event.type === "error") {
+                finalizedResult = next.find((item) => item.modelId === event.modelId);
+              }
+              return next;
+            });
+            if (finalizedResult) {
+              syncLiveStreamMetricFromResult(finalizedResult);
+            }
+            updateRun(persistedRunId, (existing) => ({
               ...existing,
               results: existing.results.map((item) =>
                 applyEventToResult(item, event),
@@ -2613,7 +3192,7 @@ export function BuildOffClient() {
             error: item.error ?? message,
           }));
 
-          updateRun(runId, (existing) => ({
+          updateRun(persistedRunId, (existing) => ({
             ...existing,
             results: next,
           }));
@@ -2626,8 +3205,6 @@ export function BuildOffClient() {
     })();
   }
 
-  const maxSelectableCards = getMaxSelectableModelCards(catalog);
-  const minSelectableCards = getMinSelectableModelCards(catalog);
   const canAddPanel =
     !isLoadingModels && selectedModels.length < maxSelectableCards;
   const canRemovePanel = selectedModels.length > minSelectableCards;
@@ -2721,11 +3298,33 @@ export function BuildOffClient() {
     },
     {
       label: "Output",
-      render: (result) => formatTokenCount(result.usage?.outputTokens),
+      render: (result) => {
+        const metrics = getDisplayOutputMetrics(result);
+        return formatLiveTokenCount(
+          metrics.outputTokens,
+          metrics.outputEstimated,
+        );
+      },
     },
     {
       label: "Total",
-      render: (result) => formatTokenCount(result.usage?.totalTokens),
+      render: (result) => {
+        const metrics = getDisplayOutputMetrics(result);
+        return formatLiveTokenCount(metrics.totalTokens, metrics.totalEstimated);
+      },
+    },
+    {
+      label: "Tool calls",
+      render: (result) => formatTokenCount(result.stats?.toolCallCount),
+    },
+    {
+      label: "Steps",
+      render: (result) => formatTokenCount(result.stats?.stepCount),
+    },
+    {
+      label: "Tps",
+      render: (result) =>
+        formatTokensPerSecond(getDisplayOutputMetrics(result).peakTokensPerSecond),
     },
     { label: "Cost", render: (result) => formatCost(result.costs?.total) },
     { label: "Finish", render: (result) => result.finishReason ?? "—" },
@@ -2876,6 +3475,13 @@ export function BuildOffClient() {
             History{runs.length ? ` (${runs.length})` : ""}
           </button>
 
+          <Link
+            className="shrink-0 rounded-full px-3 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground)"
+            href="/stats"
+          >
+            Stats
+          </Link>
+
           <span
             aria-hidden="true"
             className="mx-1 hidden h-4 w-px shrink-0 bg-(--foreground) opacity-15 sm:block"
@@ -3017,8 +3623,7 @@ export function BuildOffClient() {
                   Agentic mode
                 </p>
                 <p className="mt-2 text-sm leading-6 text-(--muted)">
-                  Models get one draft turn, then can inspect the live iframe via
-                  `get_screenshot` and `get_console_logs` before revising.
+                  LLM Tools: `get_screenshot`, `get_console_logs`, `get_html`, and `set_html`.
                 </p>
               </div>
 
@@ -3189,6 +3794,9 @@ export function BuildOffClient() {
         {/* Model cards */}
         {selectedModels.map((model, index) => {
           const result = results[index];
+          const tokenMetrics = result
+            ? getDisplayOutputMetrics(result)
+            : undefined;
           const catalogModel =
             catalog.find((entry) => entry.config === getModelConfig(model)) ?? null;
           const previewId = `${model.id}-${index}`;
@@ -3203,6 +3811,17 @@ export function BuildOffClient() {
           const isDragTarget =
             dragOverIndex === index && dragSourceIndex !== index;
           const isFresh = freshModelIds.includes(model.id);
+          const voteSummary = result?.vote ?? {
+            score: 0,
+            upvotes: 0,
+            downvotes: 0,
+          };
+          const voteKey = activeRunId ? getVoteKey(activeRunId, index) : null;
+          const isVotePending = voteKey ? !!votePendingByKey[voteKey] : false;
+          const canVote =
+            !!activeRunId &&
+            !!result &&
+            (result.status === "done" || result.status === "error");
 
           return (
             <div
@@ -3245,6 +3864,7 @@ export function BuildOffClient() {
                   </span>
                 ) : (
                   <ModelPicker
+                    agenticEnabled={agenticOptions.enabled}
                     catalog={catalog}
                     disabled={isLoadingModels}
                     onOpenChange={(isOpen) =>
@@ -3253,8 +3873,10 @@ export function BuildOffClient() {
                       )
                     }
                     onSelect={(modelId) => handleModelChange(index, modelId)}
+                    onSortModeChange={setModelSortMode}
                     recentModelConfigs={recentModelConfigs}
                     selectedModels={selectedModels}
+                    sortMode={modelSortMode}
                     value={model}
                     variant="header"
                   />
@@ -3428,6 +4050,45 @@ export function BuildOffClient() {
               {/* Metrics footer — appears after run starts */}
               {result && result.status !== "idle" ? (
                 <div className="build-card__footer">
+                  <span className="inline-flex items-center gap-1">
+                    <button
+                      aria-label={`Thumbs up ${result.label}`}
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-xs transition",
+                        voteSummary.userVote === 1
+                          ? "border-[color-mix(in_oklch,var(--success)_42%,transparent)] bg-[color-mix(in_oklch,var(--success)_15%,transparent)] text-(--foreground)"
+                          : "border-(--line) hover:bg-(--card-active)",
+                      )}
+                      disabled={!canVote || isVotePending}
+                      onClick={() => {
+                        void handleVote(index, 1);
+                      }}
+                      title={`${voteSummary.upvotes} thumbs up`}
+                      type="button"
+                    >
+                      👍
+                    </button>
+                    <strong className="font-semibold text-(--foreground)">
+                      {formatVoteScore(voteSummary.score)}
+                    </strong>
+                    <button
+                      aria-label={`Thumbs down ${result.label}`}
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-xs transition",
+                        voteSummary.userVote === -1
+                          ? "border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] text-(--foreground)"
+                          : "border-(--line) hover:bg-(--card-active)",
+                      )}
+                      disabled={!canVote || isVotePending}
+                      onClick={() => {
+                        void handleVote(index, -1);
+                      }}
+                      title={`${voteSummary.downvotes} thumbs down`}
+                      type="button"
+                    >
+                      👎
+                    </button>
+                  </span>
                   <span>
                     Latency{" "}
                     <strong className="font-semibold text-(--foreground)">
@@ -3448,11 +4109,59 @@ export function BuildOffClient() {
                       </strong>
                     </span>
                   ) : null}
-                  {result.usage?.outputTokens != null ? (
+                  {tokenMetrics?.outputTokens != null ? (
                     <span>
                       Out{" "}
                       <strong className="font-semibold text-(--foreground)">
-                        {formatTokenCount(result.usage.outputTokens)}
+                        {formatLiveTokenCount(
+                          tokenMetrics.outputTokens,
+                          tokenMetrics.outputEstimated,
+                        )}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {tokenMetrics?.totalTokens != null ? (
+                    <span>
+                      Total{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatLiveTokenCount(
+                          tokenMetrics.totalTokens,
+                          tokenMetrics.totalEstimated,
+                        )}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {result.stats?.toolCallCount != null ? (
+                    <span>
+                      Tools{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokenCount(result.stats.toolCallCount)}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {result.stats?.stepCount != null ? (
+                    <span>
+                      Steps{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokenCount(result.stats.stepCount)}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {tokenMetrics?.peakTokensPerSecond != null ? (
+                    <span>
+                      Tps{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokensPerSecond(
+                          tokenMetrics.peakTokensPerSecond,
+                        )}
+                      </strong>
+                    </span>
+                  ) : null}
+                  {result.stats?.toolErrorCount != null ? (
+                    <span>
+                      Tool errors{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokenCount(result.stats.toolErrorCount)}
                       </strong>
                     </span>
                   ) : null}

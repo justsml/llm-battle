@@ -63,6 +63,7 @@ type OpenRouterModelPayload = {
   };
   architecture?: OpenRouterArchitecturePayload;
   pricing?: OpenRouterPricingPayload;
+  supported_parameters?: string[];
 };
 
 type OpenRouterModelsResponse = {
@@ -122,6 +123,8 @@ function normalizeModel(model: GatewayModelPayload): GatewayModel | null {
     type,
     tags,
     supportsImageInput: isVisionCapableModel({ type, tags }),
+    supportsToolCalling: tags.includes("tool-use"),
+    supportsReasoning: tags.includes("reasoning"),
     pricing: normalizePricing(model.pricing),
   };
 }
@@ -157,6 +160,9 @@ function normalizeOpenRouterModel(model: OpenRouterModelPayload): GatewayModel |
 
   const provider = model.id.split("/")[0]?.trim() || "openrouter";
   const supportsImageInput = isOpenRouterVisionCapable(model);
+  const supportedParameters = new Set(
+    (model.supported_parameters ?? []).map((parameter) => parameter.toLowerCase()),
+  );
 
   return {
     id: model.id,
@@ -171,6 +177,12 @@ function normalizeOpenRouterModel(model: OpenRouterModelPayload): GatewayModel |
     contextWindow: model.top_provider?.context_length ?? model.context_length,
     maxTokens: model.top_provider?.max_completion_tokens,
     supportsImageInput,
+    supportsToolCalling:
+      supportedParameters.has("tools") || supportedParameters.has("tool_choice"),
+    supportsReasoning:
+      supportedParameters.has("reasoning")
+      || supportedParameters.has("include_reasoning")
+      || supportedParameters.has("reasoning_effort"),
     pricing: normalizeOpenRouterPricing(model.pricing),
   };
 }

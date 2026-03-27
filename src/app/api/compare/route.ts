@@ -15,9 +15,11 @@ import { estimateModelCost, fetchAvailableModels } from "@/lib/gateway-models";
 import {
   DEFAULT_MODELS,
   getModelApiKey,
+  getModelConfig,
   getModelRequestOptions,
   parseModelConfig,
   resolveModelBaseUrl,
+  supportsAgenticModel,
 } from "@/lib/models";
 import { isStorageConfigured, uploadImage, uploadText } from "@/lib/storage";
 import type {
@@ -26,6 +28,7 @@ import type {
   CompareRequest,
   GatewayModel,
   ModelCostSnapshot,
+  ModelExecutionStats,
   ModelResult,
   ModelUsageSnapshot,
 } from "@/lib/types";
@@ -181,12 +184,122 @@ function mergeUsage(
   };
 }
 
+type MutableToolMetric = {
+  calls: number;
+  errors: number;
+  totalDurationMs: number;
+  lastDurationMs?: number;
+};
+
+type ExecutionTracker = {
+  passCount: number;
+  stepCount: number;
+  toolCallCount: number;
+  toolErrorCount: number;
+  textDeltaCount: number;
+  tools: Record<string, MutableToolMetric>;
+  activeToolCalls: Map<string, { toolName: string; startedAtMs: number }>;
+};
+
+function createExecutionTracker(): ExecutionTracker {
+  return {
+    passCount: 0,
+    stepCount: 0,
+    toolCallCount: 0,
+    toolErrorCount: 0,
+    textDeltaCount: 0,
+    tools: {},
+    activeToolCalls: new Map(),
+  };
+}
+
+function getMutableToolMetric(tracker: ExecutionTracker, toolName: string) {
+  if (!tracker.tools[toolName]) {
+    tracker.tools[toolName] = {
+      calls: 0,
+      errors: 0,
+      totalDurationMs: 0,
+    };
+  }
+
+  return tracker.tools[toolName];
+}
+
+function finishTrackedToolCall(
+  tracker: ExecutionTracker,
+  toolCallId: string,
+  fallbackToolName: string,
+  didError: boolean,
+) {
+  const activeCall = tracker.activeToolCalls.get(toolCallId);
+  const toolName = activeCall?.toolName ?? fallbackToolName;
+  const metric = getMutableToolMetric(tracker, toolName);
+  const durationMs = activeCall
+    ? Math.max(0, Date.now() - activeCall.startedAtMs)
+    : undefined;
+
+  tracker.activeToolCalls.delete(toolCallId);
+
+  if (didError) {
+    tracker.toolErrorCount += 1;
+    metric.errors += 1;
+  }
+
+  if (durationMs != null) {
+    metric.lastDurationMs = durationMs;
+    metric.totalDurationMs += durationMs;
+  }
+
+  return durationMs;
+}
+
+function snapshotExecutionStats(
+  tracker: ExecutionTracker,
+  options?: {
+    outputChars?: number;
+    usage?: ModelUsageSnapshot;
+    runtimeMs?: number;
+  },
+): ModelExecutionStats {
+  const tools = Object.fromEntries(
+    Object.entries(tracker.tools).map(([toolName, metric]) => [
+      toolName,
+      {
+        calls: metric.calls,
+        errors: metric.errors,
+        totalDurationMs: metric.totalDurationMs || undefined,
+        averageDurationMs:
+          metric.calls > 0 ? metric.totalDurationMs / metric.calls : undefined,
+        lastDurationMs: metric.lastDurationMs,
+      },
+    ]),
+  );
+
+  const runtimeMs = options?.runtimeMs;
+  const outputTokens = options?.usage?.outputTokens;
+
+  return {
+    passCount: tracker.passCount || undefined,
+    stepCount: tracker.stepCount || undefined,
+    toolCallCount: tracker.toolCallCount || undefined,
+    toolErrorCount: tracker.toolErrorCount || undefined,
+    textDeltaCount: tracker.textDeltaCount || undefined,
+    outputChars: options?.outputChars,
+    tokensPerSecond:
+      runtimeMs && runtimeMs > 0 && outputTokens != null
+        ? outputTokens / (runtimeMs / 1000)
+        : undefined,
+    tools: Object.keys(tools).length ? tools : undefined,
+  };
+}
+
 type StreamPassOptions = {
   controller: ReadableStreamDefaultController<Uint8Array>;
   model: CompareModel;
   providerModelId: string;
   startedAtMs: number;
   firstTokenAtRef: { value?: string };
+  tracker: ExecutionTracker;
   messages: ModelMessage[];
   gatewayModel?: GatewayModel;
   replaceOnTextStart?: boolean;
@@ -202,6 +315,7 @@ async function streamPass({
   providerModelId,
   startedAtMs,
   firstTokenAtRef,
+  tracker,
   messages,
   gatewayModel,
   replaceOnTextStart = false,
@@ -213,6 +327,7 @@ async function streamPass({
   let responseId: string | undefined;
   let textBlockOpen = false;
   const modelRequestOptions = getModelRequestOptions(model);
+  tracker.passCount += 1;
 
   const browserTools = {
     get_screenshot: tool({
@@ -317,11 +432,13 @@ async function streamPass({
         }
       : undefined,
     onStepFinish(event) {
+      tracker.stepCount += 1;
       sendEvent(controller, {
         type: "agent-step",
         modelId: model.id,
         stepNumber: event.stepNumber,
         finishReason: event.finishReason,
+        stats: snapshotExecutionStats(tracker),
       });
     },
     onFinish(event) {
@@ -349,6 +466,7 @@ async function streamPass({
           firstTokenAtRef.value = new Date().toISOString();
         }
 
+        tracker.textDeltaCount += 1;
         passText += part.text;
         sendEvent(controller, {
           type: "delta",
@@ -362,26 +480,48 @@ async function streamPass({
         break;
       }
       case "tool-call": {
+        tracker.toolCallCount += 1;
+        const metric = getMutableToolMetric(tracker, part.toolName);
+        metric.calls += 1;
+        tracker.activeToolCalls.set(part.toolCallId, {
+          toolName: part.toolName,
+          startedAtMs: Date.now(),
+        });
         sendEvent(controller, {
           type: "tool-call",
           modelId: model.id,
           toolCallId: part.toolCallId,
           toolName: part.toolName,
           input: part.input,
+          stats: snapshotExecutionStats(tracker),
         });
         break;
       }
       case "tool-result": {
+        const durationMs = finishTrackedToolCall(
+          tracker,
+          part.toolCallId,
+          part.toolName,
+          false,
+        );
         sendEvent(controller, {
           type: "tool-result",
           modelId: model.id,
           toolCallId: part.toolCallId,
           toolName: part.toolName,
           output: part.output,
+          durationMs,
+          stats: snapshotExecutionStats(tracker),
         });
         break;
       }
       case "tool-error": {
+        const durationMs = finishTrackedToolCall(
+          tracker,
+          part.toolCallId,
+          part.toolName,
+          true,
+        );
         sendEvent(controller, {
           type: "tool-error",
           modelId: model.id,
@@ -393,6 +533,8 @@ async function streamPass({
               : "error" in part
                 ? String(part.error)
                 : "Tool execution failed.",
+          durationMs,
+          stats: snapshotExecutionStats(tracker),
         });
         break;
       }
@@ -437,6 +579,7 @@ async function streamModelResult(
   let usage: ModelUsageSnapshot | undefined;
   let finishReason: string | undefined;
   let responseId: string | undefined;
+  const tracker = createExecutionTracker();
 
   sendEvent(controller, {
     type: "start",
@@ -449,6 +592,7 @@ async function streamModelResult(
             todoListTool: agentic.todoListTool,
           }
         : undefined,
+    stats: snapshotExecutionStats(tracker),
   });
 
   try {
@@ -458,6 +602,7 @@ async function streamModelResult(
       providerModelId: provider.modelId,
       startedAtMs,
       firstTokenAtRef,
+      tracker,
       gatewayModel,
       messages: [
         {
@@ -484,6 +629,7 @@ async function streamModelResult(
         providerModelId: provider.modelId,
         startedAtMs,
         firstTokenAtRef,
+        tracker,
         gatewayModel,
         replaceOnTextStart: true,
         agentic: {
@@ -522,7 +668,13 @@ async function streamModelResult(
     }
 
     const completedAtIso = new Date().toISOString();
+    const runtimeMs = Date.parse(completedAtIso) - startedAtMs;
     const costs = estimateModelCost(gatewayModel?.pricing ?? EMPTY_PRICING, usage ?? {});
+    const stats = snapshotExecutionStats(tracker, {
+      outputChars: fullText.length,
+      usage,
+      runtimeMs,
+    });
 
     sendEvent(controller, {
       type: "done",
@@ -532,11 +684,12 @@ async function streamModelResult(
       latencyMs: firstTokenAtRef.value
         ? Date.parse(firstTokenAtRef.value) - startedAtMs
         : undefined,
-      runtimeMs: Date.parse(completedAtIso) - startedAtMs,
+      runtimeMs,
       finishReason,
       responseId,
       usage,
       costs,
+      stats,
     });
 
     return {
@@ -550,15 +703,23 @@ async function streamModelResult(
       latencyMs: firstTokenAtRef.value
         ? Date.parse(firstTokenAtRef.value) - startedAtMs
         : undefined,
-      runtimeMs: Date.parse(completedAtIso) - startedAtMs,
+      runtimeMs,
       finishReason,
       responseId,
       usage,
       costs,
+      stats,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected model error.";
     const completedAtIso = new Date().toISOString();
+    const runtimeMs = Date.parse(completedAtIso) - startedAtMs;
+    const costs = estimateModelCost(gatewayModel?.pricing ?? EMPTY_PRICING, usage ?? {});
+    const stats = snapshotExecutionStats(tracker, {
+      outputChars: fullText.length,
+      usage,
+      runtimeMs,
+    });
 
     sendEvent(controller, {
       type: "error",
@@ -569,7 +730,10 @@ async function streamModelResult(
       latencyMs: firstTokenAtRef.value
         ? Date.parse(firstTokenAtRef.value) - startedAtMs
         : undefined,
-      runtimeMs: Date.parse(completedAtIso) - startedAtMs,
+      runtimeMs,
+      usage,
+      costs,
+      stats,
     });
 
     return {
@@ -584,7 +748,10 @@ async function streamModelResult(
       latencyMs: firstTokenAtRef.value
         ? Date.parse(firstTokenAtRef.value) - startedAtMs
         : undefined,
-      runtimeMs: Date.parse(completedAtIso) - startedAtMs,
+      runtimeMs,
+      usage,
+      costs,
+      stats,
     };
   }
 }
@@ -695,6 +862,22 @@ export async function POST(request: Request) {
       { error: "Both a prompt and a screenshot are required." },
       { status: 400 },
     );
+  }
+
+  if (agentic.enabled) {
+    const unsupported = models.find((model) => {
+      const catalogModel = catalogModelMap.get(model.config ?? getModelConfig(model));
+      return !catalogModel || !catalogModel.supportsImageInput || !supportsAgenticModel(catalogModel);
+    });
+
+    if (unsupported) {
+      return Response.json(
+        {
+          error: `${unsupported.label} is not verified for agentic mode. Choose a vision model with tool calling or reasoning support.`,
+        },
+        { status: 400 },
+      );
+    }
   }
 
   const runId = uid();

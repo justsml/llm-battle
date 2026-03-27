@@ -33,6 +33,8 @@ function toCustomGatewayModel(model: CustomModelConfig): GatewayModel {
     type: "language",
     tags: model.supportsImageInput ? ["vision", "custom"] : ["custom"],
     supportsImageInput: model.supportsImageInput,
+    supportsToolCalling: false,
+    supportsReasoning: false,
     pricing: {
       inputTiers: [],
       outputTiers: [],
