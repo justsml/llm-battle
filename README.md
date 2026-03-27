@@ -157,6 +157,32 @@ The app uses two tables in Neon Postgres:
 | -------- | ------ | ------------- |
 | `run_id` | uuid | FK to `runs` |
 | `model_id` | text | Model identifier |
+
+**`custom_model_configs`** — saved custom LLM endpoints per user
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | text | Primary key |
+| `user_id` | text | Owning user |
+| `name` | text | Friendly display name |
+| `llm_string` | text | Stored `llm://...` connection string |
+| `supports_image_input` | boolean | Whether the backend can accept screenshots |
+
+### Custom model configs
+
+You can now save user-scoped custom backends through `POST /api/models` and remove them with `DELETE /api/models?id=<id>`. Saved entries are merged into the normal `/api/models` catalog for signed-in users.
+
+Example LM Studio config:
+
+```json
+{
+  "name": "Local LM Studio",
+  "llmString": "llm://localhost:1234/qwen2.5-vl-7b-instruct?protocol=http",
+  "supportsImageInput": true
+}
+```
+
+Custom backends are treated as OpenAI-compatible endpoints. Local hosts default to `http://` and `/v1`; you can override the path with `?path=/custom/v1`.
 | `output` | text | Generated HTML |
 | `input_tokens` | int | Prompt token count |
 | `output_tokens` | int | Completion token count |

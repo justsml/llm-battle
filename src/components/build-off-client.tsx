@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import {
+  type CSSProperties,
   useDeferredValue,
   useEffect,
   useEffectEvent,
@@ -21,6 +22,7 @@ import {
   toCompareModel,
 } from "@/lib/models";
 import type {
+  AgenticOptions,
   CompareModel,
   GatewayModel,
   ModelResult,
@@ -30,10 +32,92 @@ import { cn } from "@/lib/utils";
 
 const MAX_RUNS = 20;
 const LOCAL_DRAFT_KEY = "build-off:draft:v1";
+const LOCAL_RECENT_MODELS_KEY = "build-off:recent-models:v1";
 const MIN_MODEL_CARDS = 2;
 const MAX_MODEL_CARDS = 12;
+const RECENT_MODEL_LIMIT = 24;
 
 type OutputMode = "preview" | "raw";
+type CardSize = "s" | "m" | "l" | "xl";
+type ModelCardModeKey = "standard" | "agentic";
+
+type PreviewConsoleEntry = {
+  level: string;
+  message: string;
+  timestamp: string;
+};
+
+type AgenticToolState = {
+  count: number;
+  status: "idle" | "running" | "error";
+  error?: string;
+};
+
+type AgenticCardState = {
+  enabled: boolean;
+  maxTurns: number;
+  stepsCompleted: number;
+  tools: Record<string, AgenticToolState>;
+};
+
+type ModelCardWorkspaceState = {
+  activeRunId: string | null;
+  selectedModels: CompareModel[];
+  results: ModelResult[];
+  agenticActivity: Record<string, AgenticCardState>;
+  previewErrors: Record<string, string[]>;
+  previewToolErrors: Record<string, string[]>;
+  previewOverrides: Record<string, string>;
+};
+
+const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
+  enabled: false,
+  maxTurns: 4,
+  todoListTool: false,
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  get_screenshot: "Screenshot",
+  get_html: "Read HTML",
+  set_html: "Set HTML",
+  get_console_logs: "Console logs",
+  todo_list: "Todo list",
+};
+
+const CARD_SIZE_CONFIG: Record<
+  CardSize,
+  {
+    minWidth: string;
+    viewportHeight: string;
+    referenceHeight: string;
+    fullscreenViewportHeight: string;
+  }
+> = {
+  s: {
+    minWidth: "240px",
+    viewportHeight: "14rem",
+    referenceHeight: "14rem",
+    fullscreenViewportHeight: "100vh",
+  },
+  m: {
+    minWidth: "320px",
+    viewportHeight: "18rem",
+    referenceHeight: "18rem",
+    fullscreenViewportHeight: "100vh",
+  },
+  l: {
+    minWidth: "480px",
+    viewportHeight: "22rem",
+    referenceHeight: "22rem",
+    fullscreenViewportHeight: "100vh",
+  },
+  xl: {
+    minWidth: "100%",
+    viewportHeight: "min(28.125rem, 60vh)",
+    referenceHeight: "min(28.125rem, 60vh)",
+    fullscreenViewportHeight: "100vh",
+  },
+};
 
 /** Wrap a state mutation in a View Transition so the browser animates the DOM delta. */
 function withTransition(update: () => void) {
@@ -64,6 +148,24 @@ function createEmptyResult(model: CompareModel): ModelResult {
 
 function createEmptyResults(models: CompareModel[]): ModelResult[] {
   return models.map(createEmptyResult);
+}
+
+function getModelCardModeKey(agenticEnabled: boolean): ModelCardModeKey {
+  return agenticEnabled ? "agentic" : "standard";
+}
+
+function createInitialModelCardWorkspaceState(
+  models: CompareModel[] = DEFAULT_MODELS,
+): ModelCardWorkspaceState {
+  return {
+    activeRunId: null,
+    selectedModels: models,
+    results: createEmptyResults(models),
+    agenticActivity: {},
+    previewErrors: {},
+    previewToolErrors: {},
+    previewOverrides: {},
+  };
 }
 
 function uid() {
@@ -116,13 +218,26 @@ function statusTone(status: ModelResult["status"]) {
   }
 }
 
+function statusLineClass(status: ModelResult["status"] | undefined) {
+  switch (status) {
+    case "done":
+      return "build-card__status-line build-card__status-line--done";
+    case "streaming":
+      return "build-card__status-line build-card__status-line--streaming";
+    case "error":
+      return "build-card__status-line build-card__status-line--error";
+    default:
+      return "build-card__status-line build-card__status-line--idle";
+  }
+}
+
 function syncModelLabels(models: CompareModel[], catalog: GatewayModel[]) {
   return models.map((model) => {
     const match = catalog.find((item) => item.config === getModelConfig(model));
     return match
       ? {
           ...model,
-          label: getModelLabel(match.id),
+          label: match.name,
           config: match.config,
         }
       : {
@@ -150,6 +265,80 @@ function getModelSourceLabel(model: Pick<CompareModel, "id" | "config"> | Gatewa
   return host;
 }
 
+function getProviderTone(source: string) {
+  if (source === "OpenRouter") {
+    return {
+      trigger:
+        "border-[color-mix(in_oklch,var(--accent)_18%,var(--line))] bg-[color-mix(in_oklch,var(--accent)_5%,var(--panel))]",
+      chip:
+        "border-[color-mix(in_oklch,var(--accent)_30%,transparent)] bg-[color-mix(in_oklch,var(--accent)_12%,transparent)] text-[color-mix(in_oklch,var(--accent)_62%,white)]",
+      option:
+        "border-l-[color-mix(in_oklch,var(--accent)_36%,transparent)]",
+      meta:
+        "border-[color-mix(in_oklch,var(--accent)_20%,transparent)] bg-[color-mix(in_oklch,var(--accent)_8%,transparent)]",
+    };
+  }
+
+  if (source === "Vercel") {
+    return {
+      trigger:
+        "border-[color-mix(in_oklch,var(--success)_16%,var(--line))] bg-[color-mix(in_oklch,var(--success)_4%,var(--panel))]",
+      chip:
+        "border-[color-mix(in_oklch,var(--success)_28%,transparent)] bg-[color-mix(in_oklch,var(--success)_11%,transparent)] text-[color-mix(in_oklch,var(--success)_66%,white)]",
+      option:
+        "border-l-[color-mix(in_oklch,var(--success)_32%,transparent)]",
+      meta:
+        "border-[color-mix(in_oklch,var(--success)_18%,transparent)] bg-[color-mix(in_oklch,var(--success)_7%,transparent)]",
+    };
+  }
+
+  return {
+    trigger:
+      "border-[color-mix(in_oklch,var(--foreground)_12%,var(--line))] bg-(--panel)",
+    chip:
+      "border-(--line) bg-[color-mix(in_oklch,var(--foreground)_4%,transparent)] text-(--muted)",
+    option:
+      "border-l-[color-mix(in_oklch,var(--foreground)_16%,transparent)]",
+    meta: "border-(--line) bg-transparent",
+  };
+}
+
+function mergeRecentModelConfigs(current: string[], additions: string[]) {
+  const merged = [...additions, ...current].filter(Boolean);
+  const seen = new Set<string>();
+  const next: string[] = [];
+
+  for (const config of merged) {
+    if (seen.has(config)) continue;
+    seen.add(config);
+    next.push(config);
+
+    if (next.length >= RECENT_MODEL_LIMIT) {
+      break;
+    }
+  }
+
+  if (
+    next.length === current.length &&
+    next.every((config, index) => config === current[index])
+  ) {
+    return current;
+  }
+
+  return next;
+}
+
+function shuffleItems<T>(items: T[]) {
+  const next = [...items];
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+  }
+
+  return next;
+}
+
 function getVisionModels(catalog: GatewayModel[]) {
   return catalog.filter((model) => model.supportsImageInput);
 }
@@ -167,20 +356,41 @@ function getMinSelectableModelCards(catalog: GatewayModel[]) {
   );
 }
 
-function getNextAvailableModels(
+function getPreferredAvailableModels(
   catalog: GatewayModel[],
   selectedConfigs: string[],
   count: number,
+  recentConfigs: string[],
 ) {
   if (count <= 0) return [];
 
-  const usedIds = new Set(selectedConfigs);
+  const usedConfigs = new Set(selectedConfigs);
+  const visionModels = getVisionModels(catalog);
+  const modelsByConfig = new Map(
+    visionModels.map((model) => [model.config, model]),
+  );
   const nextModels: GatewayModel[] = [];
 
-  for (const model of getVisionModels(catalog)) {
-    if (usedIds.has(model.config)) continue;
+  for (const config of recentConfigs) {
+    if (usedConfigs.has(config)) continue;
+    const model = modelsByConfig.get(config);
+    if (!model) continue;
+
     nextModels.push(model);
-    usedIds.add(model.config);
+    usedConfigs.add(config);
+
+    if (nextModels.length >= count) {
+      return nextModels;
+    }
+  }
+
+  const randomPool = shuffleItems(
+    visionModels.filter((model) => !usedConfigs.has(model.config)),
+  );
+
+  for (const model of randomPool) {
+    nextModels.push(model);
+    usedConfigs.add(model.config);
 
     if (nextModels.length >= count) {
       break;
@@ -259,6 +469,7 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
 <script>
 (() => {
   const previewId = ${JSON.stringify(previewId)};
+  const consoleRecords = [];
   const send = (kind, message) => {
     try {
       window.parent.postMessage(
@@ -273,14 +484,179 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
     } catch {}
   };
 
+  const sendCommandResult = (commandId, action, payload, error) => {
+    try {
+      window.parent.postMessage(
+        {
+          source: "build-off-preview",
+          previewId,
+          kind: error ? "command-error" : "command-result",
+          commandId,
+          action,
+          payload,
+          error,
+        },
+        "*",
+      );
+    } catch {}
+  };
+
+  const recordConsole = (level, args) => {
+    const message = args
+      .map((value) => {
+        if (typeof value === "string") return value;
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      })
+      .join(" ");
+
+    consoleRecords.push({
+      level,
+      message,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (consoleRecords.length > 200) {
+      consoleRecords.splice(0, consoleRecords.length - 200);
+    }
+  };
+
+  ["log", "warn", "error", "info"].forEach((level) => {
+    const original = console[level]?.bind(console);
+    console[level] = (...args) => {
+      recordConsole(level, args);
+      original?.(...args);
+    };
+  });
+
+  const captureScreenshot = async () => {
+    const clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll("script").forEach((node) => node.remove());
+    clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+
+    const width = Math.max(
+      320,
+      Math.min(
+        1600,
+        Math.max(
+          document.documentElement.scrollWidth,
+          document.body?.scrollWidth ?? 0,
+          window.innerWidth,
+        ),
+      ),
+    );
+    const height = Math.max(
+      240,
+      Math.min(
+        1200,
+        Math.max(
+          document.documentElement.scrollHeight,
+          document.body?.scrollHeight ?? 0,
+          window.innerHeight,
+        ),
+      ),
+    );
+
+    const svg = \`<svg xmlns="http://www.w3.org/2000/svg" width="\${width}" height="\${height}" viewBox="0 0 \${width} \${height}">
+      <foreignObject width="100%" height="100%">\${new XMLSerializer().serializeToString(clone)}</foreignObject>
+    </svg>\`;
+
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    try {
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Unable to render preview screenshot."));
+        img.src = url;
+      });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("Canvas 2D context is unavailable.");
+      }
+
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(image, 0, 0, width, height);
+
+      return {
+        dataUrl: canvas.toDataURL("image/png"),
+        width,
+        height,
+        capturedAt: new Date().toISOString(),
+      };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const applyViewportFit = () => {
+    const body = document.body;
+    if (!body) return;
+
+    body.style.transform = "";
+    body.style.transformOrigin = "";
+    body.style.width = "";
+    body.style.minHeight = "";
+
+    const documentWidth = Math.max(
+      document.documentElement.scrollWidth,
+      body.scrollWidth,
+      body.offsetWidth,
+    );
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || documentWidth;
+
+    if (!documentWidth || !viewportWidth) return;
+
+    const scale = Math.min(1, viewportWidth / documentWidth);
+    if (scale > 0.98) return;
+
+    body.style.transformOrigin = "top left";
+    body.style.transform = \`scale(\${scale})\`;
+    body.style.width = \`\${100 / scale}%\`;
+    body.style.minHeight = \`\${Math.ceil(window.innerHeight / scale)}px\`;
+  };
+
   send("clear", "");
+  window.addEventListener("load", applyViewportFit);
+  window.addEventListener("resize", applyViewportFit);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(applyViewportFit);
+  });
+
+  const fitObserver = new MutationObserver(() => {
+    requestAnimationFrame(applyViewportFit);
+  });
+
+  fitObserver.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    characterData: true,
+  });
 
   window.addEventListener("error", (event) => {
+    recordConsole("error", [event.message || "Runtime error while rendering preview."]);
     send("error", event.message || "Runtime error while rendering preview.");
   });
 
   window.addEventListener("unhandledrejection", (event) => {
     const reason = event.reason;
+    recordConsole("error", [
+      reason instanceof Error
+        ? reason.message
+        : typeof reason === "string"
+          ? reason
+          : "Unhandled promise rejection while rendering preview.",
+    ]);
     send(
       "error",
       reason instanceof Error
@@ -289,6 +665,44 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
           ? reason
           : "Unhandled promise rejection while rendering preview.",
     );
+  });
+
+  window.addEventListener("message", async (event) => {
+    const data = event.data;
+    if (
+      !data ||
+      typeof data !== "object" ||
+      data.source !== "build-off-preview-parent" ||
+      data.previewId !== previewId ||
+      typeof data.commandId !== "string" ||
+      typeof data.action !== "string"
+    ) {
+      return;
+    }
+
+    try {
+      if (data.action === "get_console_logs") {
+        sendCommandResult(data.commandId, data.action, {
+          logs: consoleRecords.slice(-100),
+        });
+        return;
+      }
+
+      if (data.action === "get_screenshot") {
+        sendCommandResult(
+          data.commandId,
+          data.action,
+          await captureScreenshot(),
+        );
+      }
+    } catch (error) {
+      sendCommandResult(
+        data.commandId,
+        data.action,
+        null,
+        error instanceof Error ? error.message : "Preview command failed.",
+      );
+    }
   });
 })();
 </script>`;
@@ -373,6 +787,37 @@ function formatResultStatus(result: ModelResult) {
   return "Waiting";
 }
 
+function getToolLabel(toolName: string) {
+  return TOOL_LABELS[toolName] ?? toolName.replaceAll("_", " ");
+}
+
+function createAgenticCardState(options: AgenticOptions): AgenticCardState {
+  const toolNames = options.enabled
+    ? [
+        "get_screenshot",
+        "get_html",
+        "set_html",
+        "get_console_logs",
+        ...(options.todoListTool ? ["todo_list"] : []),
+      ]
+    : [];
+
+  return {
+    enabled: options.enabled,
+    maxTurns: options.maxTurns,
+    stepsCompleted: 0,
+    tools: Object.fromEntries(
+      toolNames.map((toolName) => [
+        toolName,
+        {
+          count: 0,
+          status: "idle" as const,
+        },
+      ]),
+    ),
+  };
+}
+
 function summarizePrompt(value: string) {
   const trimmed = value.trim().replace(/\s+/g, " ");
   if (!trimmed) return "No prompt yet.";
@@ -413,24 +858,29 @@ function modelMatchesQuery(model: GatewayModel, query: string) {
 }
 
 type ModelPickerProps = {
-  index: number;
   value: CompareModel;
   catalog: GatewayModel[];
   disabled: boolean;
   selectedModels: CompareModel[];
+  recentModelConfigs: string[];
   onSelect: (modelConfig: string) => void;
+  onOpenChange?: (isOpen: boolean) => void;
+  variant?: "default" | "header";
 };
 
 function ModelPicker({
-  index,
   value,
   catalog,
   disabled,
   selectedModels,
+  recentModelConfigs,
   onSelect,
+  onOpenChange,
+  variant = "default",
 }: ModelPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>();
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -440,6 +890,15 @@ function ModelPicker({
     (model) => model.supportsImageInput && modelMatchesQuery(model, query),
   );
   const filteredGroups = groupModelsByProvider(filteredModels);
+  const selectedProvider = selectedCatalogModel
+    ? getModelSourceLabel(selectedCatalogModel)
+    : getModelSourceLabel(value);
+  const selectedProviderTone = getProviderTone(selectedProvider);
+  const selectedConfigs = new Set(selectedModels.map((model) => getModelConfig(model)));
+  const triggerClassName =
+    variant === "header"
+      ? "min-w-0 flex-1 rounded-[1rem] border px-3 py-2.5 text-left transition hover:bg-(--card-active)"
+      : "w-full rounded-[1rem] border px-3 py-3 text-left transition hover:bg-(--card-active)";
 
   useEffect(() => {
     if (!isOpen) return;
@@ -448,10 +907,42 @@ function ModelPicker({
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen || variant !== "header") return;
+
+    const root = rootRef.current;
+    const card = root?.closest(".build-card");
+    if (!(root instanceof HTMLElement) || !(card instanceof HTMLElement)) return;
+
+    const updateDropdownGeometry = () => {
+      const rootRect = root.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+
+      setDropdownStyle({
+        left: `${cardRect.left - rootRect.left}px`,
+        width: `${cardRect.width}px`,
+      });
+    };
+
+    const frameId = window.requestAnimationFrame(updateDropdownGeometry);
+
+    const resizeObserver = new ResizeObserver(updateDropdownGeometry);
+    resizeObserver.observe(root);
+    resizeObserver.observe(card);
+    window.addEventListener("resize", updateDropdownGeometry);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateDropdownGeometry);
+    };
+  }, [isOpen, variant]);
+
+  useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setQuery("");
         setIsOpen(false);
+        onOpenChange?.(false);
       }
     }
 
@@ -459,6 +950,7 @@ function ModelPicker({
       if (event.key === "Escape") {
         setQuery("");
         setIsOpen(false);
+        onOpenChange?.(false);
       }
     }
 
@@ -468,28 +960,41 @@ function ModelPicker({
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, []);
+  }, [onOpenChange]);
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className={cn("relative", isOpen && "z-40")} ref={rootRef}>
       <button
-        className="w-full rounded-[1rem] border border-(--line) bg-(--panel) px-3 py-3 text-left transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-60"
+        className={cn(
+          triggerClassName,
+          selectedProviderTone.trigger,
+          isOpen &&
+            "shadow-[0_18px_50px_color-mix(in_oklch,var(--foreground)_12%,transparent)]",
+          variant === "header" && "bg-transparent",
+          disabled && "cursor-not-allowed opacity-60",
+        )}
         disabled={disabled}
         onClick={() =>
           setIsOpen((current) => {
             const next = !current;
             if (!next) setQuery("");
+            onOpenChange?.(next);
             return next;
           })
         }
         type="button"
       >
-        <span className="block text-sm font-medium">
+        <span className="block truncate text-sm font-medium">
           {selectedCatalogModel ? getModelLabel(selectedCatalogModel.id) : value.label}
         </span>
         <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-(--muted)">
-          <span className="rounded-full border border-(--line) px-2 py-0.5 font-semibold uppercase tracking-[0.14em]">
-            {selectedCatalogModel ? getModelSourceLabel(selectedCatalogModel) : getModelSourceLabel(value)}
+          <span
+            className={cn(
+              "rounded-full border px-2 py-0.5 font-semibold uppercase tracking-[0.14em]",
+              selectedProviderTone.chip,
+            )}
+          >
+            {selectedProvider}
           </span>
           <span className="truncate">
             {selectedCatalogModel
@@ -500,7 +1005,10 @@ function ModelPicker({
       </button>
 
       {isOpen ? (
-        <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--panel) shadow-[0_20px_60px_color-mix(in_oklch,var(--foreground)_15%,transparent)] backdrop-blur-xl">
+        <div
+          className="absolute z-[90] mt-2 w-full overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--panel) shadow-[0_24px_80px_color-mix(in_oklch,var(--foreground)_18%,transparent)] backdrop-blur-xl"
+          style={dropdownStyle}
+        >
           <div className="sticky top-0 z-10 border-b border-(--line) bg-(--panel-strong) p-3">
             <input
               ref={searchRef}
@@ -520,12 +1028,22 @@ function ModelPicker({
                   </p>
                   <div className="space-y-1">
                     {models.map((entry) => {
+                      const providerTone = getProviderTone(
+                        getModelSourceLabel(entry),
+                      );
+                      const isRemembered = recentModelConfigs.includes(entry.config);
+                      const isSelectedElsewhere =
+                        selectedConfigs.has(entry.config) &&
+                        entry.config !== getModelConfig(value);
                       return (
                         <button
                           className={cn(
-                            "w-full rounded-[1rem] border px-3 py-2 text-left transition",
+                            "w-full rounded-[1rem] border border-l-[3px] px-3 py-2 text-left transition",
+                            providerTone.option,
+                            isRemembered &&
+                              "shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--foreground)_14%,transparent)]",
                             entry.config === getModelConfig(value)
-                              ? "border-(--foreground) bg-(--card-active)"
+                              ? "bg-(--card-active) shadow-[0_10px_26px_color-mix(in_oklch,var(--foreground)_10%,transparent)]"
                               : "border-(--line) bg-(--card) hover:bg-(--card-active)",
                           )}
                           key={entry.config}
@@ -533,6 +1051,7 @@ function ModelPicker({
                             onSelect(entry.config);
                             setQuery("");
                             setIsOpen(false);
+                            onOpenChange?.(false);
                           }}
                           type="button"
                         >
@@ -542,15 +1061,30 @@ function ModelPicker({
                                 {getModelLabel(entry.id)}
                               </span>
                               <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--muted)">
-                                <span className="rounded-full border border-(--line) px-2 py-0.5 font-semibold uppercase tracking-[0.14em]">
+                                <span
+                                  className={cn(
+                                    "rounded-full border px-2 py-0.5 font-semibold uppercase tracking-[0.14em]",
+                                    providerTone.chip,
+                                  )}
+                                >
                                   {getModelSourceLabel(entry)}
                                 </span>
                                 <span className="truncate">
                                   {entry.ownedBy}
                                 </span>
+                                {isSelectedElsewhere ? (
+                                  <span className="rounded-full border border-(--line) px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-(--muted)">
+                                    In use
+                                  </span>
+                                ) : null}
                               </span>
                             </span>
-                            <span className="shrink-0 rounded-full border border-(--line) px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)">
+                            <span
+                              className={cn(
+                                "shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-(--muted)",
+                                providerTone.meta,
+                              )}
+                            >
                               {formatMonthYear(entry.releasedAt)}
                             </span>
                           </span>
@@ -574,26 +1108,37 @@ function ModelPicker({
 
 type LiveHtmlPreviewProps = {
   markup: string;
+  overrideMarkup?: string;
   previewId: string;
   title: string;
   isStreaming: boolean;
+  iframeRef?: (element: HTMLIFrameElement | null) => void;
+  interactive?: boolean;
 };
 
 function LiveHtmlPreview({
   markup,
+  overrideMarkup,
   previewId,
   title,
   isStreaming,
+  iframeRef,
+  interactive = false,
 }: LiveHtmlPreviewProps) {
-  const normalizedMarkup = unwrapHtmlCodeFence(markup);
+  const normalizedMarkup = unwrapHtmlCodeFence(overrideMarkup ?? markup);
   const deferredMarkup = useDeferredValue(normalizedMarkup);
   const previewMarkup = isStreaming ? deferredMarkup : normalizedMarkup;
 
   return (
     <iframe
-      className="h-full w-full bg-white"
+      className={cn(
+        "h-full w-full bg-white",
+        !interactive && "pointer-events-none",
+      )}
+      ref={iframeRef}
       sandbox="allow-scripts"
       srcDoc={createPreviewSrcDoc(previewMarkup, previewId)}
+      tabIndex={interactive ? 0 : -1}
       title={title}
     />
   );
@@ -604,6 +1149,7 @@ type OutputViewportProps = {
   children: ReactNode;
   className?: string;
   contentClassName?: string;
+  contentStyle?: CSSProperties;
 };
 
 function OutputViewport({
@@ -611,6 +1157,7 @@ function OutputViewport({
   children,
   className,
   contentClassName,
+  contentStyle,
 }: OutputViewportProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -658,9 +1205,10 @@ function OutputViewport({
 
       <div
         className={cn(
-          "output-viewport__content h-[24rem] sm:h-[30rem]",
+          "output-viewport__content",
           contentClassName,
         )}
+        style={contentStyle}
       >
         {children}
       </div>
@@ -687,7 +1235,10 @@ export function BuildOffClient() {
   const [modelsError, setModelsError] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
-  const [cardSize, setCardSize] = useState<"s" | "m" | "l">("m");
+  const [cardSize, setCardSize] = useState<CardSize>("m");
+  const [freshModelIds, setFreshModelIds] = useState<string[]>([]);
+  const [recentModelConfigs, setRecentModelConfigs] = useState<string[]>([]);
+  const [openPickerIndex, setOpenPickerIndex] = useState<number | null>(null);
   const [dragSourceIndex, setDragSourceIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -700,11 +1251,96 @@ export function BuildOffClient() {
   const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>(
     {},
   );
+  const [previewToolErrors, setPreviewToolErrors] = useState<
+    Record<string, string[]>
+  >({});
+  const [previewOverrides, setPreviewOverrides] = useState<
+    Record<string, string>
+  >({});
+  const [agenticOptions, setAgenticOptions] = useState<AgenticOptions>(
+    DEFAULT_AGENTIC_OPTIONS,
+  );
+  const [agenticActivity, setAgenticActivity] = useState<
+    Record<string, AgenticCardState>
+  >({});
+  const [modelCardStatesByMode, setModelCardStatesByMode] = useState<
+    Record<ModelCardModeKey, ModelCardWorkspaceState>
+  >(() => ({
+    standard: createInitialModelCardWorkspaceState(),
+    agentic: createInitialModelCardWorkspaceState(),
+  }));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewFrameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
+  const resultsRef = useRef<ModelResult[]>(results);
+  const previewOverridesRef = useRef<Record<string, string>>({});
+  const previewCommandResolvers = useRef<
+    Record<
+      string,
+      {
+        resolve: (value: unknown) => void;
+        reject: (error: Error) => void;
+      }
+    >
+  >({});
+  const lastSavedDraftRef = useRef<string | null>(null);
   const restoredDraftRef = useRef(false);
-  const pendingDraftModelIdsRef = useRef<string[] | null>(null);
+  const pendingDraftModelConfigsByModeRef = useRef<
+    Partial<Record<ModelCardModeKey, string[]>> | null
+  >(null);
+  const pendingDraftModeKeyRef = useRef<ModelCardModeKey>("standard");
   const signedInUser = sessionData?.user ?? null;
   const signedInUserId = signedInUser?.id ?? null;
+  const currentModelCardModeKey = getModelCardModeKey(agenticOptions.enabled);
+
+  useEffect(() => {
+    resultsRef.current = results;
+  }, [results]);
+
+  useEffect(() => {
+    previewOverridesRef.current = previewOverrides;
+  }, [previewOverrides]);
+
+  function buildCurrentModelCardWorkspaceState(): ModelCardWorkspaceState {
+    return {
+      activeRunId,
+      selectedModels,
+      results,
+      agenticActivity,
+      previewErrors,
+      previewToolErrors,
+      previewOverrides,
+    };
+  }
+
+  function applyModelCardWorkspaceState(state: ModelCardWorkspaceState) {
+    setActiveRunId(state.activeRunId);
+    setSelectedModels(state.selectedModels);
+    setResults(state.results);
+    setAgenticActivity(state.agenticActivity);
+    setPreviewErrors(state.previewErrors);
+    setPreviewToolErrors(state.previewToolErrors);
+    setPreviewOverrides(state.previewOverrides);
+  }
+
+  function handleToggleAgenticMode() {
+    const currentModeKey = getModelCardModeKey(agenticOptions.enabled);
+    const nextModeKey =
+      currentModeKey === "agentic" ? "standard" : "agentic";
+    const currentWorkspaceState = buildCurrentModelCardWorkspaceState();
+    const nextWorkspaceState = modelCardStatesByMode[nextModeKey];
+
+    setModelCardStatesByMode((current) => ({
+      ...current,
+      [currentModeKey]: currentWorkspaceState,
+    }));
+    applyModelCardWorkspaceState(nextWorkspaceState);
+    setOpenPickerIndex(null);
+    setFreshModelIds([]);
+    setAgenticOptions((current) => ({
+      ...current,
+      enabled: !current.enabled,
+    }));
+  }
 
 
   async function loadRuns(options?: { hydrateLatest?: boolean }) {
@@ -773,6 +1409,10 @@ export function BuildOffClient() {
         imageDataUrl?: string;
         imageName?: string;
         selectedModelConfigs?: string[];
+        selectedModelConfigsByMode?: Partial<
+          Record<ModelCardModeKey, string[]>
+        >;
+        agenticOptions?: Partial<AgenticOptions>;
       };
 
       if (typeof draft.prompt === "string") {
@@ -790,11 +1430,59 @@ export function BuildOffClient() {
       }
 
       if (
+        draft.selectedModelConfigsByMode &&
+        typeof draft.selectedModelConfigsByMode === "object"
+      ) {
+        pendingDraftModelConfigsByModeRef.current = {
+          standard: Array.isArray(draft.selectedModelConfigsByMode.standard)
+            ? draft.selectedModelConfigsByMode.standard.filter(
+                (value) => typeof value === "string",
+              )
+            : undefined,
+          agentic: Array.isArray(draft.selectedModelConfigsByMode.agentic)
+            ? draft.selectedModelConfigsByMode.agentic.filter(
+                (value) => typeof value === "string",
+              )
+            : undefined,
+        };
+        restoredDraftRef.current = true;
+      } else if (
         Array.isArray(draft.selectedModelConfigs) &&
         draft.selectedModelConfigs.length
       ) {
-        pendingDraftModelIdsRef.current = draft.selectedModelConfigs;
+        pendingDraftModelConfigsByModeRef.current = {
+          standard: draft.selectedModelConfigs,
+        };
         restoredDraftRef.current = true;
+      }
+
+      if (draft.agenticOptions && typeof draft.agenticOptions === "object") {
+        const nextAgenticOptions = {
+          ...DEFAULT_AGENTIC_OPTIONS,
+          ...draft.agenticOptions,
+          maxTurns: Math.max(
+            1,
+            Math.min(
+              8,
+              Math.round(
+                draft.agenticOptions.maxTurns ??
+                  DEFAULT_AGENTIC_OPTIONS.maxTurns,
+              ),
+            ),
+          ),
+        };
+        pendingDraftModeKeyRef.current = getModelCardModeKey(
+          nextAgenticOptions.enabled,
+        );
+        setAgenticOptions(nextAgenticOptions);
+      }
+
+      const rawRecentModels = window.localStorage.getItem(LOCAL_RECENT_MODELS_KEY);
+      if (rawRecentModels) {
+        const parsedRecentModels = JSON.parse(rawRecentModels) as string[];
+        if (Array.isArray(parsedRecentModels)) {
+          setRecentModelConfigs(parsedRecentModels.filter((value) => typeof value === "string"));
+        }
       }
     } catch {
       // Ignore malformed local draft state.
@@ -826,9 +1514,10 @@ export function BuildOffClient() {
         const nextCatalog = payload.models ?? [];
 
         setCatalog(nextCatalog);
-        const selectedFromDraft =
-          pendingDraftModelIdsRef.current
-            ?.map((config) =>
+
+        const resolveDraftModels = (configs?: string[]) =>
+          (configs ?? [])
+            .map((config) =>
               nextCatalog.find((model) => model.config === config),
             )
             .filter(
@@ -841,14 +1530,67 @@ export function BuildOffClient() {
             )
             .filter(
               (model, index, models) =>
-                models.findIndex((entry) => entry.config === model.config) === index,
-            ) ?? [];
+                models.findIndex((entry) => entry.config === model.config) ===
+                index,
+            )
+            .map(toCompareModel);
 
-        if (selectedFromDraft.length) {
-          const nextModels = selectedFromDraft.map(toCompareModel);
-          setActiveRunId(null);
-          setSelectedModels(nextModels);
-          setResults(createEmptyResults(nextModels));
+        const selectedFromDraftByMode = {
+          standard: resolveDraftModels(
+            pendingDraftModelConfigsByModeRef.current?.standard,
+          ),
+          agentic: resolveDraftModels(
+            pendingDraftModelConfigsByModeRef.current?.agentic,
+          ),
+        };
+
+        if (
+          selectedFromDraftByMode.standard.length ||
+          selectedFromDraftByMode.agentic.length
+        ) {
+          setModelCardStatesByMode((current) => ({
+            standard: selectedFromDraftByMode.standard.length
+              ? createInitialModelCardWorkspaceState(
+                  selectedFromDraftByMode.standard,
+                )
+              : {
+                  ...current.standard,
+                  selectedModels: syncModelLabels(
+                    current.standard.selectedModels,
+                    nextCatalog,
+                  ),
+                  results: createEmptyResults(
+                    syncModelLabels(current.standard.selectedModels, nextCatalog),
+                  ),
+                },
+            agentic: selectedFromDraftByMode.agentic.length
+              ? createInitialModelCardWorkspaceState(
+                  selectedFromDraftByMode.agentic,
+                )
+              : {
+                  ...current.agentic,
+                  selectedModels: syncModelLabels(
+                    current.agentic.selectedModels,
+                    nextCatalog,
+                  ),
+                  results: createEmptyResults(
+                    syncModelLabels(current.agentic.selectedModels, nextCatalog),
+                  ),
+                },
+          }));
+
+          const modeToHydrate = pendingDraftModeKeyRef.current;
+          const nextModels = selectedFromDraftByMode[modeToHydrate];
+
+          if (nextModels.length) {
+            setActiveRunId(null);
+            setSelectedModels(nextModels);
+            setResults(createEmptyResults(nextModels));
+            setAgenticActivity({});
+            setPreviewErrors({});
+            setPreviewToolErrors({});
+            setPreviewOverrides({});
+          }
         } else {
           setSelectedModels((current) => syncModelLabels(current, nextCatalog));
           setResults((current) =>
@@ -856,7 +1598,7 @@ export function BuildOffClient() {
               const match = nextCatalog.find(
                 (model) => model.id === result.modelId,
               );
-              return match ? { ...result, label: getModelLabel(match.id) } : result;
+              return match ? { ...result, label: match.name } : result;
             }),
           );
         }
@@ -869,11 +1611,11 @@ export function BuildOffClient() {
               const match = nextCatalog.find(
                 (model) => model.id === result.modelId,
               );
-              return match ? { ...result, label: getModelLabel(match.id) } : result;
+              return match ? { ...result, label: match.name } : result;
             }),
           })),
         );
-        pendingDraftModelIdsRef.current = null;
+        pendingDraftModelConfigsByModeRef.current = null;
         setModelsError("");
       } catch (error) {
         setModelsError(
@@ -889,19 +1631,83 @@ export function BuildOffClient() {
 
   useEffect(() => {
     try {
+      const currentWorkspaceState: ModelCardWorkspaceState = {
+        activeRunId,
+        selectedModels,
+        results,
+        agenticActivity,
+        previewErrors,
+        previewToolErrors,
+        previewOverrides,
+      };
+      const selectedModelConfigsByMode: Record<ModelCardModeKey, string[]> = {
+        standard:
+          (
+            currentModelCardModeKey === "standard"
+              ? currentWorkspaceState
+              : modelCardStatesByMode.standard
+          ).selectedModels.map((model) => getModelConfig(model)),
+        agentic:
+          (
+            currentModelCardModeKey === "agentic"
+              ? currentWorkspaceState
+              : modelCardStatesByMode.agentic
+          ).selectedModels.map((model) => getModelConfig(model)),
+      };
+      const nextDraft = JSON.stringify({
+        prompt,
+        imageDataUrl,
+        imageName,
+        selectedModelConfigs:
+          selectedModelConfigsByMode[currentModelCardModeKey],
+        selectedModelConfigsByMode,
+        agenticOptions,
+      });
+
+      if (lastSavedDraftRef.current === nextDraft) {
+        return;
+      }
+
+      window.localStorage.setItem(LOCAL_DRAFT_KEY, nextDraft);
+      lastSavedDraftRef.current = nextDraft;
+    } catch {
+      // Ignore unavailable localStorage.
+    }
+  }, [
+    agenticOptions,
+    currentModelCardModeKey,
+    imageDataUrl,
+    imageName,
+    modelCardStatesByMode,
+    prompt,
+    selectedModels,
+    results,
+    activeRunId,
+    agenticActivity,
+    previewErrors,
+    previewToolErrors,
+    previewOverrides,
+  ]);
+
+  useEffect(() => {
+    setRecentModelConfigs((current) =>
+      mergeRecentModelConfigs(
+        current,
+        selectedModels.map((model) => getModelConfig(model)),
+      ),
+    );
+  }, [selectedModels]);
+
+  useEffect(() => {
+    try {
       window.localStorage.setItem(
-        LOCAL_DRAFT_KEY,
-        JSON.stringify({
-          prompt,
-          imageDataUrl,
-          imageName,
-          selectedModelConfigs: selectedModels.map((model) => getModelConfig(model)),
-        }),
+        LOCAL_RECENT_MODELS_KEY,
+        JSON.stringify(recentModelConfigs),
       );
     } catch {
       // Ignore unavailable localStorage.
     }
-  }, [imageDataUrl, imageName, prompt, selectedModels]);
+  }, [recentModelConfigs]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -909,6 +1715,16 @@ export function BuildOffClient() {
     const id = setInterval(() => setNowMs(Date.now()), 100);
     return () => clearInterval(id);
   }, [isRunning]);
+
+  useEffect(() => {
+    if (!freshModelIds.length) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setFreshModelIds([]);
+    }, 1100);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [freshModelIds]);
 
   useEffect(() => {
     function handlePreviewMessage(event: MessageEvent) {
@@ -948,12 +1764,52 @@ export function BuildOffClient() {
             [data.previewId]: [...existing, data.message],
           };
         });
+        return;
+      }
+
+      if (
+        (data.kind === "command-result" || data.kind === "command-error") &&
+        typeof data.commandId === "string"
+      ) {
+        const pending = previewCommandResolvers.current[data.commandId];
+        if (!pending) return;
+
+        delete previewCommandResolvers.current[data.commandId];
+
+        if (
+          data.kind === "command-error" &&
+          typeof data.error === "string" &&
+          data.error.trim()
+        ) {
+          pending.reject(new Error(data.error));
+          return;
+        }
+
+        pending.resolve(data.payload);
       }
     }
 
     window.addEventListener("message", handlePreviewMessage);
     return () => window.removeEventListener("message", handlePreviewMessage);
   }, []);
+
+  function getEffectiveMarkupForModelId(modelId: string) {
+    return (
+      previewOverridesRef.current[modelId] ??
+      resultsRef.current.find((result) => result.modelId === modelId)?.text ??
+      ""
+    );
+  }
+
+  function dismissPreviewToolErrors(previewId: string) {
+    setPreviewToolErrors((current) => {
+      if (!(previewId in current)) return current;
+
+      const next = { ...current };
+      delete next[previewId];
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!catalog.length) return;
@@ -974,17 +1830,18 @@ export function BuildOffClient() {
       return;
     }
 
-    const additions = getNextAvailableModels(
+    const additions = getPreferredAvailableModels(
       catalog,
       selectedModels.map((model) => getModelConfig(model)),
       minCards - selectedModels.length,
+      recentModelConfigs,
     ).map(toCompareModel);
 
     if (!additions.length) return;
 
     setSelectedModels((current) => [...current, ...additions]);
     setResults((current) => [...current, ...additions.map(createEmptyResult)]);
-  }, [catalog, selectedModels]);
+  }, [catalog, recentModelConfigs, selectedModels]);
 
   useEffect(() => {
     const onPaste = async (event: ClipboardEvent) => {
@@ -1015,6 +1872,287 @@ export function BuildOffClient() {
     setRuns((current) =>
       current.map((run) => (run.id === runId ? updater(run) : run)),
     );
+  }
+
+  function getPreviewIdForModelId(modelId: string) {
+    const index = selectedModels.findIndex((model) => model.id === modelId);
+    return index >= 0 ? `${selectedModels[index].id}-${index}` : null;
+  }
+
+  function sendPreviewCommand(previewId: string, action: string) {
+    const frame = previewFrameRefs.current[previewId];
+    const target = frame?.contentWindow;
+    if (!target) {
+      return Promise.reject(new Error("Preview frame is not ready yet."));
+    }
+
+    return new Promise<unknown>((resolve, reject) => {
+      const commandId = uid();
+      previewCommandResolvers.current[commandId] = { resolve, reject };
+
+      target.postMessage(
+        {
+          source: "build-off-preview-parent",
+          previewId,
+          commandId,
+          action,
+        },
+        "*",
+      );
+
+      window.setTimeout(() => {
+        const pending = previewCommandResolvers.current[commandId];
+        if (!pending) return;
+        delete previewCommandResolvers.current[commandId];
+        pending.reject(new Error("Preview command timed out."));
+      }, 20_000);
+    });
+  }
+
+  async function handleToolCallEvent(event: Record<string, unknown>) {
+    if (
+      typeof event.modelId !== "string" ||
+      typeof event.toolCallId !== "string" ||
+      typeof event.toolName !== "string"
+    ) {
+      return;
+    }
+
+    if (
+      event.toolName !== "get_screenshot" &&
+      event.toolName !== "get_console_logs" &&
+      event.toolName !== "get_html" &&
+      event.toolName !== "set_html"
+    ) {
+      return;
+    }
+
+    if (event.toolName === "get_html") {
+      await fetch("/api/compare/tool-response", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          toolCallId: event.toolCallId,
+          output: {
+            html: getEffectiveMarkupForModelId(event.modelId),
+          },
+        }),
+      });
+      return;
+    }
+
+    if (event.toolName === "set_html") {
+      const modelId = event.modelId;
+      const input =
+        typeof event.input === "object" && event.input ? event.input : null;
+      const html =
+        input && typeof (input as { html?: unknown }).html === "string"
+          ? (input as { html: string }).html
+          : "";
+
+      if (!html.trim()) {
+        await fetch("/api/compare/tool-response", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            toolCallId: event.toolCallId,
+            error: "set_html requires a non-empty html string.",
+          }),
+        });
+        return;
+      }
+
+      setPreviewOverrides((current) => ({
+        ...current,
+        [modelId]: html,
+      }));
+      await fetch("/api/compare/tool-response", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          toolCallId: event.toolCallId,
+          output: {
+            ok: true,
+            htmlLength: html.length,
+          },
+        }),
+      });
+      return;
+    }
+
+    const previewId = getPreviewIdForModelId(event.modelId);
+    if (!previewId) {
+      await fetch("/api/compare/tool-response", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          toolCallId: event.toolCallId,
+          error: "No preview is available for that tool call.",
+        }),
+      });
+      return;
+    }
+
+    try {
+      const output = await sendPreviewCommand(previewId, event.toolName);
+      await fetch("/api/compare/tool-response", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          toolCallId: event.toolCallId,
+          output,
+        }),
+      });
+    } catch (error) {
+      await fetch("/api/compare/tool-response", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          toolCallId: event.toolCallId,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Preview tool execution failed.",
+        }),
+      });
+    }
+  }
+
+  function applyEventToAgenticState(
+    current: Record<string, AgenticCardState>,
+    event: Record<string, unknown>,
+  ) {
+    if (typeof event.modelId !== "string") return current;
+
+    const existing =
+      current[event.modelId] ??
+      createAgenticCardState(
+        typeof event.agentic === "object" && event.agentic
+          ? {
+              ...DEFAULT_AGENTIC_OPTIONS,
+              ...(event.agentic as Partial<AgenticOptions>),
+            }
+          : agenticOptions,
+      );
+
+    if (event.type === "start") {
+      const nextOptions =
+        typeof event.agentic === "object" && event.agentic
+          ? {
+              ...DEFAULT_AGENTIC_OPTIONS,
+              ...(event.agentic as Partial<AgenticOptions>),
+            }
+          : agenticOptions;
+
+      return {
+        ...current,
+        [event.modelId]: createAgenticCardState(nextOptions),
+      };
+    }
+
+    if (event.type === "agent-step") {
+      return {
+        ...current,
+        [event.modelId]: {
+          ...existing,
+          stepsCompleted: Math.max(
+            existing.stepsCompleted,
+            typeof event.stepNumber === "number" ? event.stepNumber + 1 : 0,
+          ),
+        },
+      };
+    }
+
+    if (
+      event.type === "tool-call" &&
+      typeof event.toolName === "string"
+    ) {
+      const toolState = existing.tools[event.toolName] ?? {
+        count: 0,
+        status: "idle" as const,
+      };
+
+      return {
+        ...current,
+        [event.modelId]: {
+          ...existing,
+          tools: {
+            ...existing.tools,
+            [event.toolName]: {
+              count: toolState.count + 1,
+              status: "running" as const,
+            },
+          },
+        },
+      };
+    }
+
+    if (
+      event.type === "tool-result" &&
+      typeof event.toolName === "string"
+    ) {
+      const toolState = existing.tools[event.toolName] ?? {
+        count: 1,
+        status: "idle" as const,
+      };
+
+      return {
+        ...current,
+        [event.modelId]: {
+          ...existing,
+          tools: {
+            ...existing.tools,
+            [event.toolName]: {
+              ...toolState,
+              status: "idle" as const,
+              error: undefined,
+            },
+          },
+        },
+      };
+    }
+
+    if (
+      event.type === "tool-error" &&
+      typeof event.toolName === "string"
+    ) {
+      const toolState = existing.tools[event.toolName] ?? {
+        count: 1,
+        status: "idle" as const,
+      };
+
+      return {
+        ...current,
+        [event.modelId]: {
+          ...existing,
+          tools: {
+            ...existing.tools,
+            [event.toolName]: {
+              ...toolState,
+              status: "error" as const,
+              error:
+                typeof event.error === "string"
+                  ? event.error
+                  : "Tool execution failed.",
+            },
+          },
+        },
+      };
+    }
+
+    return current;
   }
 
   function applyEventToResult(
@@ -1055,6 +2193,13 @@ export function BuildOffClient() {
         latencyMs:
           result.latencyMs ??
           (typeof event.latencyMs === "number" ? event.latencyMs : undefined),
+      };
+    }
+
+    if (event.type === "replace-output") {
+      return {
+        ...result,
+        text: "",
       };
     }
 
@@ -1140,15 +2285,48 @@ export function BuildOffClient() {
     setImageName(run.imageName);
     setSelectedModels(run.models);
     setResults(run.results);
+    setAgenticActivity({});
     setPreviewErrors({});
+    setPreviewToolErrors({});
+    setPreviewOverrides({});
     setErrorMessage("");
     setIsHistoryOpen(false);
   }
 
   function handleModelChange(index: number, nextModelConfig: string) {
-    const nextModel = catalog.find((model) => model.config === nextModelConfig);
+    const currentModelConfig = getModelConfig(selectedModels[index]);
+    const selectedConfigsExcludingCurrent = selectedModels
+      .filter((_, currentIndex) => currentIndex !== index)
+      .map((model) => getModelConfig(model));
+
+    let resolvedModelConfig = nextModelConfig;
+
+    if (selectedConfigsExcludingCurrent.includes(nextModelConfig)) {
+      const fallbackModel = getPreferredAvailableModels(
+        catalog,
+        selectedConfigsExcludingCurrent,
+        1,
+        recentModelConfigs.filter(
+          (config) =>
+            config !== nextModelConfig && config !== currentModelConfig,
+        ),
+      )[0];
+
+      if (fallbackModel) {
+        resolvedModelConfig = fallbackModel.config;
+      } else if (!selectedConfigsExcludingCurrent.includes(currentModelConfig)) {
+        resolvedModelConfig = currentModelConfig;
+      } else {
+        return;
+      }
+    }
+
+    const nextModel = catalog.find((model) => model.config === resolvedModelConfig);
     if (!nextModel || !nextModel.supportsImageInput) return;
 
+    setRecentModelConfigs((current) =>
+      mergeRecentModelConfigs(current, [nextModel.config]),
+    );
     setSelectedModels((current) =>
       current.map((model, currentIndex) =>
         currentIndex === index ? toCompareModel(nextModel) : model,
@@ -1176,14 +2354,16 @@ export function BuildOffClient() {
     if (clampedCount === selectedModels.length) return;
 
     if (clampedCount > selectedModels.length) {
-      const additions = getNextAvailableModels(
+      const additions = getPreferredAvailableModels(
         catalog,
         selectedModels.map((model) => getModelConfig(model)),
         clampedCount - selectedModels.length,
+        recentModelConfigs,
       ).map(toCompareModel);
 
       if (!additions.length) return;
 
+      setFreshModelIds(additions.map((model) => model.id));
       setSelectedModels((current) => [...current, ...additions]);
       setResults((current) => [
         ...current,
@@ -1297,7 +2477,20 @@ export function BuildOffClient() {
 
     setActiveRunId(runId);
     setResults(baseResults);
+    if (agenticOptions.enabled) {
+      setOutputMode("preview");
+    }
+    setAgenticActivity(
+      Object.fromEntries(
+        modelsForRun.map((entry) => [
+          entry.id,
+          createAgenticCardState(agenticOptions),
+        ]),
+      ),
+    );
     setPreviewErrors({});
+    setPreviewToolErrors({});
+    setPreviewOverrides({});
     setErrorMessage("");
     setIsHistoryOpen(false);
     setIsRunning(true);
@@ -1315,6 +2508,7 @@ export function BuildOffClient() {
             imageDataUrl,
             imageName,
             models: modelsForRun,
+            agentic: agenticOptions,
           }),
         });
 
@@ -1340,6 +2534,61 @@ export function BuildOffClient() {
           for (const line of lines) {
             if (!line.trim()) continue;
             const event = JSON.parse(line) as Record<string, unknown>;
+            if (event.type === "tool-call") {
+              void handleToolCallEvent(event);
+            }
+            if (
+              (event.type === "start" || event.type === "replace-output") &&
+              typeof event.modelId === "string"
+            ) {
+              const modelId = event.modelId;
+              const previewId = getPreviewIdForModelId(modelId);
+              setPreviewOverrides((current) => {
+                if (!(modelId in current)) return current;
+
+                const next = { ...current };
+                delete next[modelId];
+                return next;
+              });
+              if (previewId) {
+                setPreviewToolErrors((current) => {
+                  if (!(previewId in current)) return current;
+
+                  const next = { ...current };
+                  delete next[previewId];
+                  return next;
+                });
+              }
+            }
+            if (
+              event.type === "tool-error" &&
+              typeof event.modelId === "string"
+            ) {
+              const previewId = getPreviewIdForModelId(event.modelId);
+              if (previewId) {
+                const toolLabel =
+                  typeof event.toolName === "string"
+                    ? getToolLabel(event.toolName)
+                    : "Tool";
+                const message =
+                  typeof event.error === "string" && event.error.trim()
+                    ? `${toolLabel}: ${event.error}`
+                    : `${toolLabel}: Tool execution failed.`;
+
+                setPreviewToolErrors((current) => {
+                  const existing = current[previewId] ?? [];
+                  if (existing.includes(message)) return current;
+
+                  return {
+                    ...current,
+                    [previewId]: [...existing, message],
+                  };
+                });
+              }
+            }
+            setAgenticActivity((current) =>
+              applyEventToAgenticState(current, event),
+            );
             setResults((current) =>
               current.map((item) => applyEventToResult(item, event)),
             );
@@ -1383,6 +2632,12 @@ export function BuildOffClient() {
     !isLoadingModels && selectedModels.length < maxSelectableCards;
   const canRemovePanel = selectedModels.length > minSelectableCards;
   const isEditLocked = isRunning || results.some((r) => r.status !== "idle");
+  const cardSizeConfig = CARD_SIZE_CONFIG[cardSize];
+  const cardViewportStyle = {
+    "--output-viewport-height": cardSizeConfig.viewportHeight,
+    "--output-viewport-fullscreen-height":
+      cardSizeConfig.fullscreenViewportHeight,
+  } as CSSProperties;
 
   function handleDragStart(index: number) {
     setDragSourceIndex(index);
@@ -1423,8 +2678,12 @@ export function BuildOffClient() {
   function handleNewRun() {
     setResults(createEmptyResults(selectedModels));
     setErrorMessage("");
+    setAgenticActivity({});
     setPreviewErrors({});
+    setPreviewToolErrors({});
+    setPreviewOverrides({});
     setActiveRunId(null);
+    setOpenPickerIndex(null);
   }
 
   const comparisonRows: Array<{
@@ -1590,6 +2849,19 @@ export function BuildOffClient() {
           <button
             className={cn(
               "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+              agenticOptions.enabled
+                ? "bg-[color-mix(in_oklch,var(--accent)_22%,transparent)] text-(--foreground)"
+                : "text-(--muted) hover:bg-(--card-active) hover:text-(--foreground)",
+            )}
+            onClick={handleToggleAgenticMode}
+            type="button"
+          >
+            Agentic mode
+          </button>
+
+          <button
+            className={cn(
+              "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
               isHistoryOpen
                 ? "bg-(--card-active) text-(--foreground)"
                 : "text-(--muted) hover:bg-(--card-active) hover:text-(--foreground)",
@@ -1611,7 +2883,7 @@ export function BuildOffClient() {
 
           {/* Card size toggle */}
           <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
-            {(["s", "m", "l"] as const).map((size) => (
+            {(["s", "m", "l", "xl"] as const).map((size) => (
               <button
                 key={size}
                 className={cn(
@@ -1637,11 +2909,12 @@ export function BuildOffClient() {
           <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
             <button
               className={cn(
-                "px-3 py-1.5 text-xs font-medium transition",
+                "px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
                 outputMode === "preview"
                   ? "bg-(--foreground) text-(--background)"
                   : "text-(--muted) hover:bg-(--card-active)",
               )}
+              disabled={isRunning && agenticOptions.enabled}
               onClick={() => setOutputMode("preview")}
               type="button"
             >
@@ -1649,11 +2922,12 @@ export function BuildOffClient() {
             </button>
             <button
               className={cn(
-                "px-3 py-1.5 text-xs font-medium transition",
+                "px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
                 outputMode === "raw"
                   ? "bg-(--foreground) text-(--background)"
                   : "text-(--muted) hover:bg-(--card-active)",
               )}
+              disabled={isRunning && agenticOptions.enabled}
               onClick={() => setOutputMode("raw")}
               type="button"
             >
@@ -1734,6 +3008,61 @@ export function BuildOffClient() {
         ) : null}
       </div>
 
+      {agenticOptions.enabled ? (
+        <div className="rise-in mx-auto mt-3 max-w-[1600px] px-4 sm:px-0">
+          <section className="panel rounded-[1.75rem] p-4 sm:p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-2xl">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-(--muted)">
+                  Agentic mode
+                </p>
+                <p className="mt-2 text-sm leading-6 text-(--muted)">
+                  Models get one draft turn, then can inspect the live iframe via
+                  `get_screenshot` and `get_console_logs` before revising.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,180px)_minmax(0,220px)]">
+                <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                  <span>Max turns</span>
+                  <input
+                    className="rounded-[1rem] border border-(--line) bg-(--card) px-3 py-2 text-sm font-medium tracking-normal text-(--foreground) outline-none transition focus:border-(--accent)"
+                    max={8}
+                    min={1}
+                    onChange={(event) =>
+                      setAgenticOptions((current) => ({
+                        ...current,
+                        maxTurns: Math.max(
+                          1,
+                          Math.min(8, Number(event.target.value) || 1),
+                        ),
+                      }))
+                    }
+                    type="number"
+                    value={agenticOptions.maxTurns}
+                  />
+                </label>
+
+                <label className="flex items-center gap-3 rounded-[1rem] border border-(--line) bg-(--card) px-3 py-3 text-sm text-(--foreground)">
+                  <input
+                    checked={agenticOptions.todoListTool}
+                    className="h-4 w-4 accent-[var(--accent)]"
+                    onChange={(event) =>
+                      setAgenticOptions((current) => ({
+                        ...current,
+                        todoListTool: event.target.checked,
+                      }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Enable `todo_list` tool</span>
+                </label>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {/* ── History panel ────────────────────────────────────────────────── */}
       {isHistoryOpen ? (
         <div className="rise-in mx-auto mt-3 max-w-[1600px] overflow-hidden rounded-[1.75rem] border border-(--line) bg-(--card) p-4 px-4 sm:px-0">
@@ -1791,7 +3120,10 @@ export function BuildOffClient() {
       <div
         className="mx-auto mt-3 grid max-w-[1600px] gap-3 px-4 sm:px-0"
         style={{
-          gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardSize === "s" ? "240px" : cardSize === "l" ? "480px" : "320px"}), 1fr))`,
+          gridTemplateColumns:
+            cardSize === "xl"
+              ? "1fr"
+              : `repeat(auto-fill, minmax(min(100%, ${cardSizeConfig.minWidth}), 1fr))`,
         }}
       >
         {/* Image card */}
@@ -1812,20 +3144,32 @@ export function BuildOffClient() {
           </div>
           <div className="build-card__body">
             {imageDataUrl ? (
-              <div className="relative aspect-[4/3] w-full overflow-hidden rounded-b-[1.75rem]">
+              <div
+                className="relative w-full overflow-hidden rounded-b-[1.75rem]"
+                style={{ height: cardSizeConfig.referenceHeight }}
+              >
                 <Image
                   alt="Reference screenshot"
                   className="object-cover"
                   fill
-                  sizes="(max-width: 640px) 100vw, 320px"
+                  sizes={
+                    cardSize === "xl"
+                      ? "100vw"
+                      : cardSize === "l"
+                        ? "(max-width: 1024px) 100vw, 480px"
+                        : cardSize === "m"
+                          ? "(max-width: 768px) 100vw, 320px"
+                          : "(max-width: 640px) 100vw, 240px"
+                  }
                   src={imageDataUrl}
                   unoptimized
                 />
               </div>
             ) : (
               <button
-                className="flex min-h-[200px] w-full flex-col items-center justify-center gap-3 rounded-b-[1.75rem] px-6 py-8 text-center transition hover:bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)]"
+                className="flex w-full flex-col items-center justify-center gap-3 rounded-b-[1.75rem] px-6 py-8 text-center transition hover:bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)]"
                 onClick={() => fileInputRef.current?.click()}
+                style={{ minHeight: cardSizeConfig.referenceHeight }}
                 type="button"
               >
                 <span className="text-2xl opacity-25">↑</span>
@@ -1848,17 +3192,25 @@ export function BuildOffClient() {
           const catalogModel =
             catalog.find((entry) => entry.config === getModelConfig(model)) ?? null;
           const previewId = `${model.id}-${index}`;
+          const cardAgenticState = agenticActivity[model.id];
           const cardPreviewErrors = previewErrors[previewId] ?? [];
-          const hasHtml = looksLikeHtml(unwrapHtmlCodeFence(result?.text ?? ""));
+          const cardPreviewToolErrors = previewToolErrors[previewId] ?? [];
+          const effectivePreviewMarkup = previewOverrides[model.id] ?? result?.text ?? "";
+          const hasHtml = looksLikeHtml(
+            unwrapHtmlCodeFence(effectivePreviewMarkup),
+          );
           const isDragged = dragSourceIndex === index;
           const isDragTarget =
             dragOverIndex === index && dragSourceIndex !== index;
+          const isFresh = freshModelIds.includes(model.id);
 
           return (
             <div
               key={`${model.id}-${index}`}
               className={cn(
                 "build-card",
+                isFresh && "build-card--fresh",
+                openPickerIndex === index && "build-card--picker-open",
                 isDragged && "build-card--drag-source",
                 isDragTarget && "build-card--drag-target",
               )}
@@ -1887,27 +3239,36 @@ export function BuildOffClient() {
                     ⠿
                   </span>
                 ) : null}
-                <span className="flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
-                  {model.label}
-                </span>
-                <span className="shrink-0 rounded-full border border-(--line) px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-(--muted)">
-                  {catalogModel ? `${getModelSourceLabel(catalogModel)} · ${catalogModel.ownedBy}` : getModelSourceLabel(model)}
-                </span>
+                {isEditLocked ? (
+                  <span className="flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
+                    {model.label}
+                  </span>
+                ) : (
+                  <ModelPicker
+                    catalog={catalog}
+                    disabled={isLoadingModels}
+                    onOpenChange={(isOpen) =>
+                      setOpenPickerIndex((current) =>
+                        isOpen ? index : current === index ? null : current,
+                      )
+                    }
+                    onSelect={(modelId) => handleModelChange(index, modelId)}
+                    recentModelConfigs={recentModelConfigs}
+                    selectedModels={selectedModels}
+                    value={model}
+                    variant="header"
+                  />
+                )}
+                {isEditLocked ? (
+                  <span className="shrink-0 rounded-full border border-(--line) px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-(--muted)">
+                    {catalogModel ? `${getModelSourceLabel(catalogModel)} · ${catalogModel.ownedBy}` : getModelSourceLabel(model)}
+                  </span>
+                ) : null}
                 <span
-                  className={cn(
-                    "shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em]",
-                    result?.status === "done" &&
-                      "border-[color-mix(in_oklch,var(--success)_35%,transparent)] text-(--success)",
-                    result?.status === "streaming" &&
-                      "border-[color-mix(in_oklch,var(--accent)_38%,transparent)] text-(--accent)",
-                    result?.status === "error" &&
-                      "border-[color-mix(in_oklch,var(--danger)_38%,transparent)] text-(--danger)",
-                    (!result || result.status === "idle") &&
-                      "border-(--line) text-(--muted)",
-                  )}
-                >
-                  {formatResultStatus(result)}
-                </span>
+                  aria-label={formatResultStatus(result)}
+                  className={statusLineClass(result?.status)}
+                  title={formatResultStatus(result)}
+                />
                 {!isEditLocked && canRemovePanel ? (
                   <button
                     aria-label={`Remove ${model.label}`}
@@ -1920,23 +3281,59 @@ export function BuildOffClient() {
                 ) : null}
               </div>
 
-              {/* Inline model picker — only when editable */}
-              {!isEditLocked ? (
-                <div className="border-b border-(--line) p-3">
-                  <ModelPicker
-                    catalog={catalog}
-                    disabled={isLoadingModels}
-                    index={index}
-                    onSelect={(modelId) => handleModelChange(index, modelId)}
-                    selectedModels={selectedModels}
-                    value={model}
-                  />
-                </div>
-              ) : null}
-
               {/* Result content */}
               <div className="build-card__body">
-                {result?.text ? (
+                {cardAgenticState?.enabled ? (
+                  <div className="border-b border-(--line) px-3 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-[0.18em] text-(--muted)">
+                      <span>
+                        Agentic {cardAgenticState.stepsCompleted}/
+                        {cardAgenticState.maxTurns} turns
+                      </span>
+                      <span>
+                        {Object.values(cardAgenticState.tools).reduce(
+                          (sum, toolState) => sum + toolState.count,
+                          0,
+                        )}{" "}
+                        tool calls
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {Object.entries(cardAgenticState.tools).map(
+                        ([toolName, toolState]) => (
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                              toolState.status === "running" &&
+                                "border-[color-mix(in_oklch,var(--accent)_40%,transparent)] bg-[color-mix(in_oklch,var(--accent)_18%,transparent)] text-(--foreground)",
+                              toolState.status === "error" &&
+                                "border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] text-(--danger)",
+                              toolState.status === "idle" &&
+                                "border-(--line) bg-(--panel-strong) text-(--muted)",
+                            )}
+                            key={toolName}
+                            title={toolState.error}
+                          >
+                            <span
+                              className={cn(
+                                "h-1.5 w-1.5 rounded-full",
+                                toolState.status === "running" &&
+                                  "pulse-dot bg-(--accent)",
+                                toolState.status === "error" &&
+                                  "bg-(--danger)",
+                                toolState.status === "idle" &&
+                                  "bg-(--muted)",
+                              )}
+                            />
+                            {getToolLabel(toolName)} {toolState.count}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                {result?.text || previewOverrides[model.id] ? (
                   outputMode === "preview" ? (
                     <div className="flex flex-col gap-2 p-3">
                       {!hasHtml ? (
@@ -1954,14 +3351,50 @@ export function BuildOffClient() {
                       <OutputViewport
                         className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
                         contentClassName="overflow-hidden"
+                        contentStyle={cardViewportStyle}
                         title={`${result.label} preview`}
                       >
-                        <LiveHtmlPreview
-                          isStreaming={result.status === "streaming"}
-                          markup={result.text}
-                          previewId={previewId}
-                          title={`${result.label} preview`}
-                        />
+                        <div className="relative h-full w-full">
+                          <LiveHtmlPreview
+                            iframeRef={(element) => {
+                              previewFrameRefs.current[previewId] = element;
+                            }}
+                            isStreaming={result.status === "streaming"}
+                            markup={result.text}
+                            overrideMarkup={previewOverrides[model.id]}
+                            previewId={previewId}
+                            title={`${result.label} preview`}
+                          />
+                          {cardPreviewToolErrors.length ? (
+                            <div className="absolute inset-4 z-20 flex items-start justify-center">
+                              <div className="w-full max-w-xl rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,white_72%,var(--danger)_10%)] p-3 text-sm text-(--foreground) shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_18%,transparent)] backdrop-blur-md">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--danger)">
+                                      Tool call failed
+                                    </p>
+                                    <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_88%,black)]">
+                                      {cardPreviewToolErrors.map((msg, i) => (
+                                        <p key={`${previewId}-tool-err-${i}`}>
+                                          {msg}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <button
+                                    className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_30%,transparent)] bg-white/70 px-3 py-1 text-xs font-medium text-(--danger) transition hover:bg-white"
+                                    onClick={() =>
+                                      dismissPreviewToolErrors(previewId)
+                                    }
+                                    type="button"
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
                       </OutputViewport>
                     </div>
                   ) : (
@@ -1969,6 +3402,7 @@ export function BuildOffClient() {
                       <OutputViewport
                         className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
                         contentClassName="overflow-auto px-4 py-4"
+                        contentStyle={cardViewportStyle}
                         title={`${result.label} raw`}
                       >
                         <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7">
@@ -1978,7 +3412,10 @@ export function BuildOffClient() {
                     </div>
                   )
                 ) : (
-                  <div className="flex min-h-[160px] flex-1 items-center justify-center px-6 py-8 text-center text-sm leading-6 text-(--muted)">
+                  <div
+                    className="flex flex-1 items-center justify-center px-6 py-8 text-center text-sm leading-6 text-(--muted)"
+                    style={{ minHeight: cardSizeConfig.viewportHeight }}
+                  >
                     {isRunning
                       ? "Waiting for tokens…"
                       : isEditLocked
@@ -2049,7 +3486,21 @@ export function BuildOffClient() {
             onClick={() => withTransition(() => handleTargetPanelCount(selectedModels.length + 1))}
             type="button"
           >
-            <span className="ghost-card__plus">+</span>
+            <span aria-hidden="true" className="ghost-card__halo" />
+            <span className="ghost-card__orb">
+              <span className="ghost-card__plus">+</span>
+            </span>
+            <span className="ghost-card__content">
+              <span className="ghost-card__eyebrow">
+                Add contender
+              </span>
+              <span className="ghost-card__title">
+                Open one more lane for a fresh model
+              </span>
+              <span className="ghost-card__meta">
+                {selectedModels.length} of {maxSelectableCards} cards in play
+              </span>
+            </span>
           </button>
         ) : null}
       </div>

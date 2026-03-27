@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 
-import type { CompareModel, ModelResult } from "@/lib/types";
+import type { CompareModel, CustomModelConfig, ModelResult } from "@/lib/types";
 
 function getClient() {
   const url = process.env.DATABASE_URL;
@@ -80,12 +80,29 @@ export async function ensureSchema() {
     )
   `;
   await sql`
+    CREATE TABLE IF NOT EXISTS custom_model_configs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      name TEXT NOT NULL,
+      llm_string TEXT NOT NULL,
+      supports_image_input BOOLEAN NOT NULL DEFAULT TRUE,
+      UNIQUE (user_id, name),
+      UNIQUE (user_id, llm_string)
+    )
+  `;
+  await sql`
     CREATE INDEX IF NOT EXISTS runs_created_at_idx
     ON runs (created_at DESC)
   `;
   await sql`
     CREATE INDEX IF NOT EXISTS runs_user_created_at_idx
     ON runs (user_id, created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS custom_model_configs_user_updated_at_idx
+    ON custom_model_configs (user_id, updated_at DESC)
   `;
   await sql`
     CREATE INDEX IF NOT EXISTS run_model_results_run_id_idx
@@ -445,6 +462,98 @@ export async function finalizeRun(params: {
       image_data_url = ${params.imageDataUrl ?? null}
     WHERE id = ${params.id}
   `;
+}
+
+type CustomModelConfigRow = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+  name: string;
+  llm_string: string;
+  supports_image_input: boolean;
+};
+
+function toCustomModelConfig(row: CustomModelConfigRow): CustomModelConfig {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    llmString: row.llm_string,
+    supportsImageInput: row.supports_image_input,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listCustomModelConfigs(userId: string) {
+  const sql = getClient();
+  const rows = await sql`
+    SELECT
+      id,
+      user_id,
+      created_at,
+      updated_at,
+      name,
+      llm_string,
+      supports_image_input
+    FROM custom_model_configs
+    WHERE user_id = ${userId}
+    ORDER BY updated_at DESC, created_at DESC
+  `;
+
+  return (rows as unknown as CustomModelConfigRow[]).map(toCustomModelConfig);
+}
+
+export async function insertCustomModelConfig(params: {
+  id: string;
+  userId: string;
+  name: string;
+  llmString: string;
+  supportsImageInput: boolean;
+}) {
+  const sql = getClient();
+  const rows = await sql`
+    INSERT INTO custom_model_configs (
+      id,
+      user_id,
+      name,
+      llm_string,
+      supports_image_input
+    )
+    VALUES (
+      ${params.id},
+      ${params.userId},
+      ${params.name},
+      ${params.llmString},
+      ${params.supportsImageInput}
+    )
+    RETURNING
+      id,
+      user_id,
+      created_at,
+      updated_at,
+      name,
+      llm_string,
+      supports_image_input
+  `;
+
+  return toCustomModelConfig((rows as unknown as CustomModelConfigRow[])[0]);
+}
+
+export async function deleteCustomModelConfig(params: {
+  id: string;
+  userId: string;
+}) {
+  const sql = getClient();
+  const rows = await sql`
+    DELETE FROM custom_model_configs
+    WHERE id = ${params.id}
+      AND user_id = ${params.userId}
+    RETURNING id
+  `;
+
+  return (rows as Array<{ id: string }>).length > 0;
 }
 
 export function isDatabaseConfigured() {

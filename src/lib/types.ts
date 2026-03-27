@@ -4,6 +4,28 @@ export type CompareModel = {
   config?: string;
 };
 
+export type AgenticOptions = {
+  enabled: boolean;
+  maxTurns: number;
+  todoListTool: boolean;
+};
+
+export type CustomModelConfig = {
+  id: string;
+  userId: string;
+  name: string;
+  llmString: string;
+  supportsImageInput: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateCustomModelRequest = {
+  name: string;
+  llmString: string;
+  supportsImageInput?: boolean;
+};
+
 export type TokenPricingTier = {
   min: number;
   max?: number;
@@ -101,4 +123,5 @@ export type CompareRequest = {
   imageDataUrl: string;
   imageName?: string;
   models: CompareModel[];
+  agentic?: AgenticOptions;
 };

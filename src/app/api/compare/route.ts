@@ -1,6 +1,8 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { streamText } from "ai";
+import { jsonSchema, stepCountIs, streamText, tool, type ModelMessage } from "ai";
+import { z } from "zod/v4";
 
+import { createToolResponsePromise } from "@/lib/agentic-bridge";
 import { getServerSession } from "@/lib/auth";
 import {
   ensureSchema,
@@ -10,9 +12,23 @@ import {
   upsertRunModelResult,
 } from "@/lib/db";
 import { estimateModelCost, fetchAvailableModels } from "@/lib/gateway-models";
-import { DEFAULT_MODELS, parseModelConfig } from "@/lib/models";
+import {
+  DEFAULT_MODELS,
+  getModelApiKey,
+  getModelRequestOptions,
+  parseModelConfig,
+  resolveModelBaseUrl,
+} from "@/lib/models";
 import { isStorageConfigured, uploadImage, uploadText } from "@/lib/storage";
-import type { CompareRequest, CompareModel, GatewayModel, ModelResult, ModelUsageSnapshot } from "@/lib/types";
+import type {
+  AgenticOptions,
+  CompareModel,
+  CompareRequest,
+  GatewayModel,
+  ModelCostSnapshot,
+  ModelResult,
+  ModelUsageSnapshot,
+} from "@/lib/types";
 import { readDataUrlMeta } from "@/lib/utils";
 
 export const runtime = "nodejs";
@@ -34,6 +50,30 @@ const openrouter = createOpenAICompatible({
   },
 });
 
+const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
+  enabled: false,
+  maxTurns: 4,
+  todoListTool: false,
+};
+
+const TODO_LIST_SCHEMA = z.object({
+  items: z.array(
+    z.object({
+      text: z.string(),
+      done: z.boolean(),
+    }),
+  ),
+});
+
+const EMPTY_PRICING = {
+  inputTiers: [],
+  outputTiers: [],
+  inputCacheReadTiers: [],
+  inputCacheWriteTiers: [],
+};
+
+const openAiCompatibleProviders = new Map<string, ReturnType<typeof createOpenAICompatible>>();
+
 function getProviderClient(model: CompareModel) {
   const parsed = parseModelConfig(model);
 
@@ -48,8 +88,33 @@ function getProviderClient(model: CompareModel) {
     };
   }
 
+  if (parsed.host === "ai-gateway.vercel.sh") {
+    if (!process.env.AI_GATEWAY_API_KEY) {
+      throw new Error("Missing AI_GATEWAY_API_KEY. Add it to your environment first.");
+    }
+
+    return {
+      client: gateway,
+      modelId: parsed.model,
+    };
+  }
+
+  const apiKey = getModelApiKey(model);
+  const baseURL = resolveModelBaseUrl(model);
+  const cacheKey = `${baseURL}::${apiKey ?? ""}`;
+  let client = openAiCompatibleProviders.get(cacheKey);
+
+  if (!client) {
+    client = createOpenAICompatible({
+      name: parsed.label?.trim() || parsed.host.replace(/[^a-zA-Z0-9-]+/g, "-"),
+      apiKey,
+      baseURL,
+    });
+    openAiCompatibleProviders.set(cacheKey, client);
+  }
+
   return {
-    client: gateway,
+    client,
     modelId: parsed.model,
   };
 }
@@ -61,37 +126,339 @@ function sendEvent(
   controller.enqueue(new TextEncoder().encode(`${JSON.stringify(payload)}\n`));
 }
 
+function buildUsageSnapshot(usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
+  inputTokenDetails?: {
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  outputTokenDetails?: {
+    reasoningTokens?: number;
+  };
+}): ModelUsageSnapshot {
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    reasoningTokens:
+      usage.outputTokenDetails?.reasoningTokens ?? usage.reasoningTokens,
+    cacheReadTokens:
+      usage.inputTokenDetails?.cacheReadTokens ?? usage.cachedInputTokens,
+    cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens,
+  };
+}
+
+function sumMaybeNumber(a?: number, b?: number) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return a + b;
+}
+
+function mergeUsage(
+  current: ModelUsageSnapshot | undefined,
+  next: ModelUsageSnapshot,
+): ModelUsageSnapshot {
+  return {
+    inputTokens: sumMaybeNumber(current?.inputTokens, next.inputTokens),
+    outputTokens: sumMaybeNumber(current?.outputTokens, next.outputTokens),
+    totalTokens: sumMaybeNumber(current?.totalTokens, next.totalTokens),
+    reasoningTokens: sumMaybeNumber(
+      current?.reasoningTokens,
+      next.reasoningTokens,
+    ),
+    cacheReadTokens: sumMaybeNumber(
+      current?.cacheReadTokens,
+      next.cacheReadTokens,
+    ),
+    cacheWriteTokens: sumMaybeNumber(
+      current?.cacheWriteTokens,
+      next.cacheWriteTokens,
+    ),
+  };
+}
+
+type StreamPassOptions = {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  model: CompareModel;
+  providerModelId: string;
+  startedAtMs: number;
+  firstTokenAtRef: { value?: string };
+  messages: ModelMessage[];
+  gatewayModel?: GatewayModel;
+  replaceOnTextStart?: boolean;
+  agentic?: {
+    maxTurns: number;
+    todoListTool: boolean;
+  };
+};
+
+async function streamPass({
+  controller,
+  model,
+  providerModelId,
+  startedAtMs,
+  firstTokenAtRef,
+  messages,
+  gatewayModel,
+  replaceOnTextStart = false,
+  agentic,
+}: StreamPassOptions) {
+  let passText = "";
+  let stepUsage: ModelUsageSnapshot | undefined;
+  let finishReason: string | undefined;
+  let responseId: string | undefined;
+  let textBlockOpen = false;
+  const modelRequestOptions = getModelRequestOptions(model);
+
+  const browserTools = {
+    get_screenshot: tool({
+      description:
+        "Capture the currently rendered iframe screenshot for the active HTML draft.",
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      }),
+      execute: async (_input, { toolCallId }) => {
+        return createToolResponsePromise(toolCallId);
+      },
+    }),
+    get_html: tool({
+      description:
+        "Read the current effective HTML draft exactly as it is being previewed in the browser.",
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      }),
+      execute: async (_input, { toolCallId }) => {
+        return createToolResponsePromise(toolCallId);
+      },
+    }),
+    set_html: tool({
+      description:
+        "Replace the current browser preview with a full HTML draft so you can inspect an edited override before your final answer.",
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: {
+          html: {
+            type: "string",
+            description:
+              "The full replacement HTML document or fragment to preview.",
+          },
+        },
+        required: ["html"],
+        additionalProperties: false,
+      }),
+      execute: async (_input, { toolCallId }) => {
+        return createToolResponsePromise(toolCallId);
+      },
+    }),
+    get_console_logs: tool({
+      description:
+        "Read recent console, runtime error, and unhandled rejection logs from the active iframe.",
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      }),
+      execute: async (_input, { toolCallId }) => {
+        return createToolResponsePromise(toolCallId);
+      },
+    }),
+  };
+
+  const tools = agentic
+    ? {
+        ...browserTools,
+        ...(agentic.todoListTool
+          ? {
+              todo_list: tool({
+                description:
+                  "Track a compact working checklist for the current draft and mark items done as you complete them.",
+                inputSchema: TODO_LIST_SCHEMA,
+                execute: async (input: {
+                  items: Array<{ text: string; done: boolean }>;
+                }) => ({
+                  items: input.items,
+                }),
+              }),
+            }
+          : {}),
+      }
+    : undefined;
+
+  const result = streamText({
+    model: getProviderClient(model).client.chatModel(providerModelId),
+    temperature: modelRequestOptions.temperature ?? 0.3,
+    topP: modelRequestOptions.topP,
+    topK: modelRequestOptions.topK,
+    maxOutputTokens: modelRequestOptions.maxOutputTokens,
+    frequencyPenalty: modelRequestOptions.frequencyPenalty,
+    presencePenalty: modelRequestOptions.presencePenalty,
+    stopSequences: modelRequestOptions.stopSequences,
+    seed: modelRequestOptions.seed,
+    messages,
+    tools,
+    stopWhen: agentic ? stepCountIs(Math.max(1, agentic.maxTurns)) : undefined,
+    prepareStep: agentic
+      ? async ({ stepNumber }) => {
+          if (stepNumber === 0) {
+            return {
+              toolChoice: "required" as const,
+            };
+          }
+
+          return {};
+        }
+      : undefined,
+    onStepFinish(event) {
+      sendEvent(controller, {
+        type: "agent-step",
+        modelId: model.id,
+        stepNumber: event.stepNumber,
+        finishReason: event.finishReason,
+      });
+    },
+    onFinish(event) {
+      stepUsage = buildUsageSnapshot(event.totalUsage);
+      finishReason = event.finishReason;
+      responseId = event.response.id;
+    },
+  });
+
+  for await (const part of result.fullStream) {
+    switch (part.type) {
+      case "text-start": {
+        passText = "";
+        textBlockOpen = true;
+        if (replaceOnTextStart) {
+          sendEvent(controller, {
+            type: "replace-output",
+            modelId: model.id,
+          });
+        }
+        break;
+      }
+      case "text-delta": {
+        if (!firstTokenAtRef.value) {
+          firstTokenAtRef.value = new Date().toISOString();
+        }
+
+        passText += part.text;
+        sendEvent(controller, {
+          type: "delta",
+          modelId: model.id,
+          delta: part.text,
+          firstTokenAt: firstTokenAtRef.value,
+          latencyMs: firstTokenAtRef.value
+            ? Date.parse(firstTokenAtRef.value) - startedAtMs
+            : undefined,
+        });
+        break;
+      }
+      case "tool-call": {
+        sendEvent(controller, {
+          type: "tool-call",
+          modelId: model.id,
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          input: part.input,
+        });
+        break;
+      }
+      case "tool-result": {
+        sendEvent(controller, {
+          type: "tool-result",
+          modelId: model.id,
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          output: part.output,
+        });
+        break;
+      }
+      case "tool-error": {
+        sendEvent(controller, {
+          type: "tool-error",
+          modelId: model.id,
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          error:
+            "errorText" in part && typeof part.errorText === "string"
+              ? part.errorText
+              : "error" in part
+                ? String(part.error)
+                : "Tool execution failed.",
+        });
+        break;
+      }
+      case "error": {
+        throw part.error;
+      }
+      default:
+        break;
+    }
+  }
+
+  if (!textBlockOpen && replaceOnTextStart) {
+    sendEvent(controller, {
+      type: "replace-output",
+      modelId: model.id,
+    });
+  }
+
+  return {
+    text: passText,
+    usage: stepUsage,
+    finishReason,
+    responseId,
+  };
+}
+
 async function streamModelResult(
   controller: ReadableStreamDefaultController<Uint8Array>,
   model: CompareModel,
   gatewayModel: GatewayModel | undefined,
   prompt: string,
   imageDataUrl: string,
+  agentic: AgenticOptions,
 ): Promise<ModelResult> {
   const { mimeType, base64 } = readDataUrlMeta(imageDataUrl);
   const image = Uint8Array.from(Buffer.from(base64, "base64"));
   const startedAtIso = new Date().toISOString();
   const startedAtMs = Date.now();
-  let firstTokenAtIso: string | undefined;
+  const firstTokenAtRef: { value?: string } = {};
+  const provider = getProviderClient(model);
   let fullText = "";
-  let finalResult: ModelResult = {
-    modelId: model.id,
-    label: model.label,
-    text: "",
-    status: "idle",
-  };
+  let usage: ModelUsageSnapshot | undefined;
+  let finishReason: string | undefined;
+  let responseId: string | undefined;
 
   sendEvent(controller, {
     type: "start",
     modelId: model.id,
     startedAt: startedAtIso,
+    agentic:
+      agentic.enabled
+        ? {
+            maxTurns: agentic.maxTurns,
+            todoListTool: agentic.todoListTool,
+          }
+        : undefined,
   });
 
   try {
-    const provider = getProviderClient(model);
-    const result = streamText({
-      model: provider.client.chatModel(provider.modelId),
-      temperature: 0.3,
+    const initialPass = await streamPass({
+      controller,
+      model,
+      providerModelId: provider.modelId,
+      startedAtMs,
+      firstTokenAtRef,
+      gatewayModel,
       messages: [
         {
           role: "user",
@@ -101,70 +468,94 @@ async function streamModelResult(
           ],
         },
       ],
-      onFinish(event) {
-        const completedAtIso = new Date().toISOString();
-        const usage: ModelUsageSnapshot = {
-          inputTokens: event.totalUsage.inputTokens,
-          outputTokens: event.totalUsage.outputTokens,
-          totalTokens: event.totalUsage.totalTokens,
-          reasoningTokens:
-            event.totalUsage.outputTokenDetails.reasoningTokens ?? event.totalUsage.reasoningTokens,
-          cacheReadTokens:
-            event.totalUsage.inputTokenDetails.cacheReadTokens ?? event.totalUsage.cachedInputTokens,
-          cacheWriteTokens: event.totalUsage.inputTokenDetails.cacheWriteTokens,
-        };
-        const costs = estimateModelCost(gatewayModel?.pricing ?? {
-          inputTiers: [],
-          outputTiers: [],
-          inputCacheReadTiers: [],
-          inputCacheWriteTiers: [],
-        }, usage);
-
-        sendEvent(controller, {
-          type: "done",
-          modelId: model.id,
-          completedAt: completedAtIso,
-          firstTokenAt: firstTokenAtIso,
-          latencyMs: firstTokenAtIso ? Date.parse(firstTokenAtIso) - startedAtMs : undefined,
-          runtimeMs: Date.parse(completedAtIso) - startedAtMs,
-          finishReason: event.finishReason,
-          responseId: event.response.id,
-          usage,
-          costs,
-        });
-
-        finalResult = {
-          modelId: model.id,
-          label: model.label,
-          text: fullText,
-          status: "done",
-          startedAt: startedAtIso,
-          completedAt: completedAtIso,
-          firstTokenAt: firstTokenAtIso,
-          latencyMs: firstTokenAtIso ? Date.parse(firstTokenAtIso) - startedAtMs : undefined,
-          runtimeMs: Date.parse(completedAtIso) - startedAtMs,
-          finishReason: event.finishReason,
-          responseId: event.response.id,
-          usage,
-          costs,
-        };
-      },
     });
 
-    for await (const delta of result.textStream) {
-      if (!firstTokenAtIso) {
-        firstTokenAtIso = new Date().toISOString();
-      }
-      fullText += delta;
-
-      sendEvent(controller, {
-        type: "delta",
-        modelId: model.id,
-        delta,
-        firstTokenAt: firstTokenAtIso,
-        latencyMs: Date.parse(firstTokenAtIso) - startedAtMs,
-      });
+    fullText = initialPass.text;
+    if (initialPass.usage) {
+      usage = mergeUsage(usage, initialPass.usage);
     }
+    finishReason = initialPass.finishReason;
+    responseId = initialPass.responseId;
+
+    if (agentic.enabled && fullText.trim() && agentic.maxTurns > 1) {
+      const revisionPass = await streamPass({
+        controller,
+        model,
+        providerModelId: provider.modelId,
+        startedAtMs,
+        firstTokenAtRef,
+        gatewayModel,
+        replaceOnTextStart: true,
+        agentic: {
+          maxTurns: Math.max(1, agentic.maxTurns - 1),
+          todoListTool: agentic.todoListTool,
+        },
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image", image, mediaType: mimeType },
+            ],
+          },
+          {
+            role: "assistant",
+            content: fullText,
+          },
+          {
+            role: "user",
+            content:
+              "Inspect the current rendered draft with the available tools before finalizing. Return only a full replacement HTML document, never a diff.",
+          },
+        ],
+      });
+
+      if (revisionPass.text.trim()) {
+        fullText = revisionPass.text;
+      }
+
+      if (revisionPass.usage) {
+        usage = mergeUsage(usage, revisionPass.usage);
+      }
+      finishReason = revisionPass.finishReason ?? finishReason;
+      responseId = revisionPass.responseId ?? responseId;
+    }
+
+    const completedAtIso = new Date().toISOString();
+    const costs = estimateModelCost(gatewayModel?.pricing ?? EMPTY_PRICING, usage ?? {});
+
+    sendEvent(controller, {
+      type: "done",
+      modelId: model.id,
+      completedAt: completedAtIso,
+      firstTokenAt: firstTokenAtRef.value,
+      latencyMs: firstTokenAtRef.value
+        ? Date.parse(firstTokenAtRef.value) - startedAtMs
+        : undefined,
+      runtimeMs: Date.parse(completedAtIso) - startedAtMs,
+      finishReason,
+      responseId,
+      usage,
+      costs,
+    });
+
+    return {
+      modelId: model.id,
+      label: model.label,
+      text: fullText,
+      status: "done",
+      startedAt: startedAtIso,
+      completedAt: completedAtIso,
+      firstTokenAt: firstTokenAtRef.value,
+      latencyMs: firstTokenAtRef.value
+        ? Date.parse(firstTokenAtRef.value) - startedAtMs
+        : undefined,
+      runtimeMs: Date.parse(completedAtIso) - startedAtMs,
+      finishReason,
+      responseId,
+      usage,
+      costs,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected model error.";
     const completedAtIso = new Date().toISOString();
@@ -174,12 +565,14 @@ async function streamModelResult(
       modelId: model.id,
       error: message,
       completedAt: completedAtIso,
-      firstTokenAt: firstTokenAtIso,
-      latencyMs: firstTokenAtIso ? Date.parse(firstTokenAtIso) - startedAtMs : undefined,
+      firstTokenAt: firstTokenAtRef.value,
+      latencyMs: firstTokenAtRef.value
+        ? Date.parse(firstTokenAtRef.value) - startedAtMs
+        : undefined,
       runtimeMs: Date.parse(completedAtIso) - startedAtMs,
     });
 
-    finalResult = {
+    return {
       modelId: model.id,
       label: model.label,
       text: fullText,
@@ -187,13 +580,13 @@ async function streamModelResult(
       error: message,
       startedAt: startedAtIso,
       completedAt: completedAtIso,
-      firstTokenAt: firstTokenAtIso,
-      latencyMs: firstTokenAtIso ? Date.parse(firstTokenAtIso) - startedAtMs : undefined,
+      firstTokenAt: firstTokenAtRef.value,
+      latencyMs: firstTokenAtRef.value
+        ? Date.parse(firstTokenAtRef.value) - startedAtMs
+        : undefined,
       runtimeMs: Date.parse(completedAtIso) - startedAtMs,
     };
   }
-
-  return finalResult;
 }
 
 function uid() {
@@ -204,12 +597,20 @@ function looksLikeHtml(value: string) {
   return /<!doctype html|<html[\s>]|<body[\s>]|<head[\s>]|<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(value);
 }
 
-function createOutputArtifactKey(runId: string, modelIndex: number, modelId: string, output: string) {
+function createOutputArtifactKey(
+  runId: string,
+  modelIndex: number,
+  modelId: string,
+  output: string,
+) {
   const extension = looksLikeHtml(output) ? "html" : "txt";
   const modelSlug = encodeURIComponent(modelId);
   return {
     key: `runs/${runId}/models/${String(modelIndex).padStart(2, "0")}-${modelSlug}/output.${extension}`,
-    contentType: extension === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
+    contentType:
+      extension === "html"
+        ? "text/html; charset=utf-8"
+        : "text/plain; charset=utf-8",
   };
 }
 
@@ -231,7 +632,11 @@ async function persistModelResult(params: {
     );
 
     try {
-      const outputUrl = await uploadText(artifact.key, params.result.text, artifact.contentType);
+      const outputUrl = await uploadText(
+        artifact.key,
+        params.result.text,
+        artifact.contentType,
+      );
       persistedResult = {
         ...persistedResult,
         outputUrl,
@@ -267,20 +672,23 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!process.env.AI_GATEWAY_API_KEY) {
-    return Response.json(
-      { error: "Missing AI_GATEWAY_API_KEY. Add it to your environment first." },
-      { status: 500 },
-    );
-  }
-
   const body = (await request.json()) as Partial<CompareRequest>;
   const prompt = body.prompt?.trim();
   const imageDataUrl = body.imageDataUrl?.trim();
   const imageName = body.imageName?.trim() || "screenshot";
   const models = body.models?.length ? body.models : DEFAULT_MODELS;
+  const agentic: AgenticOptions = {
+    ...DEFAULT_AGENTIC_OPTIONS,
+    ...body.agentic,
+    maxTurns: Math.max(
+      1,
+      Math.min(8, Math.round(body.agentic?.maxTurns ?? DEFAULT_AGENTIC_OPTIONS.maxTurns)),
+    ),
+  };
   const catalogModels = await fetchAvailableModels().catch(() => []);
-  const catalogModelMap = new Map(catalogModels.map((model) => [model.config, model]));
+  const catalogModelMap = new Map(
+    catalogModels.map((model) => [model.config, model]),
+  );
 
   if (!prompt || !imageDataUrl) {
     return Response.json(
@@ -301,7 +709,6 @@ export async function POST(request: Request) {
   }));
   const screenshotObjectKey = `runs/${runId}/input/screenshot`;
 
-  // Upload image to Tigris in parallel with streaming
   const imageUploadPromise = useStorage
     ? uploadImage(screenshotObjectKey, imageDataUrl)
         .then((imageUrl) => ({
@@ -320,7 +727,6 @@ export async function POST(request: Request) {
         imageObjectKey: "",
       });
 
-  // Ensure schema exists if DB is configured
   if (useDb) {
     try {
       await ensureSchema();
@@ -360,7 +766,9 @@ export async function POST(request: Request) {
               catalogModelMap.get(parseModelConfig(model).raw),
               prompt,
               imageDataUrl,
+              agentic,
             );
+
             return persistModelResult({
               runId,
               modelIndex,
@@ -371,9 +779,9 @@ export async function POST(request: Request) {
           }),
         );
 
+        const completedAt = new Date().toISOString();
         if (useDb) {
           const imageArtifact = await imageUploadPromise;
-          const completedAt = new Date().toISOString();
 
           try {
             await finalizeRun({
@@ -388,20 +796,13 @@ export async function POST(request: Request) {
           } catch (error) {
             console.error("Failed to finalize run persistence:", error);
           }
-
-          sendEvent(controller, {
-            type: "complete",
-            runId,
-            completedAt,
-          });
-        } else {
-          const completedAt = new Date().toISOString();
-          sendEvent(controller, {
-            type: "complete",
-            runId,
-            completedAt,
-          });
         }
+
+        sendEvent(controller, {
+          type: "complete",
+          runId,
+          completedAt,
+        });
       } catch (error) {
         console.error("Compare stream failed:", error);
         if (useDb) {

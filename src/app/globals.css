@@ -155,7 +155,11 @@ textarea {
 }
 
 .output-viewport:fullscreen .output-viewport__content {
-  height: 100vh;
+  height: var(--output-viewport-fullscreen-height, 100vh);
+}
+
+.output-viewport__content {
+  height: var(--output-viewport-height, 24rem);
 }
 
 @keyframes rise-in {
@@ -239,6 +243,29 @@ textarea {
     transform 220ms cubic-bezier(0.25, 0, 0, 1);
 }
 
+.build-card::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 0%, transparent);
+}
+
+.build-card--fresh {
+  border-color: color-mix(in oklch, var(--accent) 36%, var(--line));
+  animation: build-card-fresh 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.build-card--fresh::after {
+  animation: build-card-fresh-ring 760ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.build-card--picker-open {
+  z-index: 40;
+}
+
 .build-card--drag-source {
   opacity: 0.35;
   transform: scale(0.972);
@@ -257,9 +284,65 @@ textarea {
   align-items: center;
   gap: 0.5rem;
   padding: 0 1rem;
-  height: 3.25rem;
+  min-height: 3.75rem;
+  padding-block: 0.6rem;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
+}
+
+.build-card__status-line {
+  position: relative;
+  flex-shrink: 0;
+  width: 3.5rem;
+  height: 0.4rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.build-card__status-line::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-size: 200% 100%;
+  animation: status-line-pulse 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.build-card__status-line--idle::before {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklch, white 18%, transparent),
+    color-mix(in oklch, white 50%, transparent),
+    color-mix(in oklch, white 18%, transparent)
+  );
+}
+
+.build-card__status-line--done::before {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--success) 28%, transparent),
+    color-mix(in oklch, var(--success) 68%, white 10%),
+    color-mix(in oklch, var(--success) 28%, transparent)
+  );
+}
+
+.build-card__status-line--streaming::before {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--accent) 22%, transparent),
+    color-mix(in oklch, var(--accent) 60%, white 10%),
+    color-mix(in oklch, var(--accent) 22%, transparent)
+  );
+}
+
+.build-card__status-line--error::before {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--danger) 18%, transparent),
+    color-mix(in oklch, var(--danger) 48%, white 8%),
+    color-mix(in oklch, var(--danger) 18%, transparent)
+  );
 }
 
 .build-card__drag {
@@ -307,37 +390,192 @@ textarea {
 
 /* ─── Ghost / Add Card ────────────────────────────────────────────────────── */
 .ghost-card {
+  position: relative;
+  isolation: isolate;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 1rem;
   min-height: 220px;
+  padding: 1.4rem;
   border-radius: 1.75rem;
   border: 1.5px dashed color-mix(in oklch, var(--foreground) 13%, transparent);
-  background: transparent;
+  background:
+    radial-gradient(circle at 85% 15%, color-mix(in oklch, var(--accent) 22%, transparent), transparent 32%),
+    linear-gradient(180deg, color-mix(in oklch, white 4%, transparent), color-mix(in oklch, white 1%, transparent));
   cursor: pointer;
+  text-align: left;
+  overflow: hidden;
   transition:
-    background 180ms ease,
-    border-color 180ms ease;
+    background 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .ghost-card:hover {
-  background: color-mix(in oklch, var(--foreground) 4%, transparent);
-  border-color: color-mix(in oklch, var(--foreground) 26%, transparent);
+  transform: translateY(-3px);
+  background:
+    radial-gradient(circle at 85% 15%, color-mix(in oklch, var(--accent) 34%, transparent), transparent 38%),
+    linear-gradient(180deg, color-mix(in oklch, white 7%, transparent), color-mix(in oklch, white 2%, transparent));
+  border-color: color-mix(in oklch, var(--accent) 42%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 12%, transparent),
+    0 20px 40px -24px color-mix(in oklch, var(--accent) 58%, transparent);
+}
+
+.ghost-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    120deg,
+    transparent 0%,
+    color-mix(in oklch, white 10%, transparent) 48%,
+    transparent 68%
+  );
+  transform: translateX(-130%);
+  opacity: 0.7;
+  transition: transform 620ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ghost-card:hover::before {
+  transform: translateX(130%);
+}
+
+.ghost-card__halo {
+  position: absolute;
+  top: 1.2rem;
+  right: 1.2rem;
+  width: 7rem;
+  height: 7rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, color-mix(in oklch, var(--accent) 18%, transparent) 0%, transparent 72%);
+  opacity: 0.75;
+  transform: scale(0.88);
+  transition:
+    opacity 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ghost-card:hover .ghost-card__halo {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.ghost-card__orb {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.75rem;
+  height: 3.75rem;
+  border-radius: 1.2rem;
+  border: 1px solid color-mix(in oklch, white 14%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in oklch, white 12%, transparent), color-mix(in oklch, white 4%, transparent)),
+    color-mix(in oklch, var(--accent-soft) 86%, var(--panel));
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+    0 10px 24px -16px color-mix(in oklch, var(--accent) 80%, transparent);
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ghost-card:hover .ghost-card__orb {
+  transform: translateY(-1px) scale(1.03);
+  border-color: color-mix(in oklch, white 26%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 24%, transparent),
+    0 18px 30px -18px color-mix(in oklch, var(--accent) 95%, transparent);
 }
 
 .ghost-card__plus {
-  font-size: 2.75rem;
-  font-weight: 200;
+  font-size: 2.35rem;
+  font-weight: 300;
   line-height: 1;
-  color: color-mix(in oklch, var(--foreground) 18%, transparent);
-  transition:
-    color 180ms ease,
-    transform 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  color: color-mix(in oklch, var(--foreground) 92%, var(--accent));
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .ghost-card:hover .ghost-card__plus {
-  color: color-mix(in oklch, var(--foreground) 40%, transparent);
-  transform: scale(1.16);
+  transform: rotate(90deg) scale(1.06);
+}
+
+.ghost-card__content {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 0.38rem;
+  max-width: 18rem;
+}
+
+.ghost-card__eyebrow {
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: color-mix(in oklch, var(--accent) 56%, var(--foreground));
+}
+
+.ghost-card__title {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.03em;
+  color: color-mix(in oklch, var(--foreground) 96%, transparent);
+}
+
+.ghost-card__meta {
+  font-size: 0.77rem;
+  line-height: 1.45;
+  color: color-mix(in oklch, var(--foreground) 48%, transparent);
+}
+
+@keyframes build-card-fresh {
+  0% {
+    transform: translateY(14px) scale(0.975);
+  }
+  55% {
+    transform: translateY(-2px) scale(1.01);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes build-card-fresh-ring {
+  0% {
+    opacity: 0;
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+  18% {
+    opacity: 1;
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 60%, transparent);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 0 12px color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+}
+
+@keyframes status-line-pulse {
+  0% {
+    opacity: 0.55;
+    background-position: 100% 50%;
+  }
+  50% {
+    opacity: 1;
+    background-position: 0% 50%;
+  }
+  100% {
+    opacity: 0.6;
+    background-position: 100% 50%;
+  }
 }
 
 /* ─── Prompt Modal ────────────────────────────────────────────────────────── */
@@ -396,7 +634,22 @@ textarea {
   }
 
   .rise-in,
-  .pulse-dot {
+  .pulse-dot,
+  .build-card--fresh,
+  .build-card--fresh::after,
+  .build-card__status-line::before {
     animation: none;
+  }
+
+  .ghost-card,
+  .ghost-card::before,
+  .ghost-card__halo,
+  .ghost-card__orb,
+  .ghost-card__plus {
+    transition: none;
+  }
+
+  .ghost-card:hover {
+    transform: none;
   }
 }
