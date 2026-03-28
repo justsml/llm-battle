@@ -99,10 +99,30 @@ export type ModelExecutionStats = {
   stepCount?: number;
   toolCallCount?: number;
   toolErrorCount?: number;
+  repairPassCount?: number;
   textDeltaCount?: number;
   outputChars?: number;
   tokensPerSecond?: number;
   tools?: Record<string, ModelToolStats>;
+};
+
+export type OutputDomCssStats = {
+  htmlBytes?: number;
+  domNodeCount?: number;
+  elementCount?: number;
+  textNodeCount?: number;
+  commentCount?: number;
+  maxDomDepth?: number;
+  styleTagCount?: number;
+  inlineStyleAttrCount?: number;
+  stylesheetLinkCount?: number;
+  scriptTagCount?: number;
+  imageCount?: number;
+  buttonCount?: number;
+  inputCount?: number;
+  formCount?: number;
+  idCount?: number;
+  classCount?: number;
 };
 
 export type ModelStatus = "idle" | "streaming" | "done" | "error";
@@ -120,6 +140,8 @@ export type ModelResult = {
   modelId: string;
   label: string;
   text: string;
+  thinking?: string;
+  repairedText?: string;
   status: ModelStatus;
   error?: string;
   startedAt?: string;
@@ -132,6 +154,7 @@ export type ModelResult = {
   usage?: ModelUsageSnapshot;
   costs?: ModelCostSnapshot;
   stats?: ModelExecutionStats;
+  domCssStats?: OutputDomCssStats;
   outputUrl?: string;
   outputObjectKey?: string;
   outputContentType?: string;

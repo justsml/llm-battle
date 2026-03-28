@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useDeferredValue, useEffect, useState } from "react";
 
 import type { ModelResult, SavedRun } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, sanitizeTokensPerSecond } from "@/lib/utils";
 
 type FlattenedResult = {
   id: string;
@@ -122,10 +122,12 @@ function formatPercent(value?: number) {
 }
 
 function formatTokensPerSecond(value?: number) {
-  if (value == null) return "—";
+  const sanitizedValue = sanitizeTokensPerSecond(value);
+  if (sanitizedValue == null) return "—";
   return `${new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2,
-  }).format(value)}/s`;
+    maximumFractionDigits:
+      sanitizedValue >= 100 ? 0 : sanitizedValue >= 10 ? 1 : 2,
+  }).format(sanitizedValue)}/s`;
 }
 
 function formatVoteScore(score?: number) {
@@ -174,7 +176,7 @@ function getResultSortValue(entry: FlattenedResult, key: ResultSortKey) {
     case "toolCalls":
       return entry.result.stats?.toolCallCount ?? -1;
     case "tokensPerSecond":
-      return entry.result.stats?.tokensPerSecond ?? -1;
+      return sanitizeTokensPerSecond(entry.result.stats?.tokensPerSecond) ?? -1;
     case "cost":
       return entry.result.costs?.total ?? -1;
     default:
@@ -307,7 +309,8 @@ export function StatsDashboardClient() {
     existing.avgToolCalls =
       (existing.avgToolCalls ?? 0) + (entry.result.stats?.toolCallCount ?? 0);
     existing.avgTokensPerSecond =
-      (existing.avgTokensPerSecond ?? 0) + (entry.result.stats?.tokensPerSecond ?? 0);
+      (existing.avgTokensPerSecond ?? 0)
+      + (sanitizeTokensPerSecond(entry.result.stats?.tokensPerSecond) ?? 0);
     existing.totalCost = (existing.totalCost ?? 0) + (entry.result.costs?.total ?? 0);
     existing.lastSeenAt =
       new Date(existing.lastSeenAt).getTime() > new Date(entry.runCreatedAt).getTime()

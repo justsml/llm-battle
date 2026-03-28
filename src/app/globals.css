@@ -306,7 +306,6 @@ textarea {
   inset: 0;
   border-radius: inherit;
   background-size: 200% 100%;
-  animation: status-line-pulse 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .build-card__status-line--idle::before {
@@ -334,6 +333,7 @@ textarea {
     color-mix(in oklch, var(--accent) 60%, white 10%),
     color-mix(in oklch, var(--accent) 22%, transparent)
   );
+  animation: status-line-pulse 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .build-card__status-line--error::before {
@@ -386,6 +386,68 @@ textarea {
   font-size: 0.6875rem;
   color: var(--muted);
   flex-shrink: 0;
+}
+
+.preview-card-shell {
+  position: relative;
+}
+
+.preview-card-trigger {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 0.9rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklch, white 2%, transparent) 0%,
+      color-mix(in oklch, black 28%, transparent) 100%
+    );
+  opacity: 0;
+  transition:
+    opacity 180ms ease,
+    background 180ms ease;
+}
+
+.preview-card-shell:hover .preview-card-trigger,
+.preview-card-trigger:focus-visible {
+  opacity: 1;
+}
+
+.preview-card-trigger__hint {
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklch, white 22%, transparent);
+  background: color-mix(in oklch, black 35%, transparent);
+  padding: 0.4rem 0.7rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: white;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.preview-card-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed color-mix(in oklch, var(--accent) 28%, var(--line));
+  border-radius: 1.2rem;
+  background:
+    radial-gradient(
+      circle at top,
+      color-mix(in oklch, var(--accent) 14%, transparent),
+      transparent 58%
+    ),
+    color-mix(in oklch, var(--panel-strong) 92%, transparent);
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 /* ─── Ghost / Add Card ────────────────────────────────────────────────────── */
@@ -578,6 +640,120 @@ textarea {
   }
 }
 
+/* ─── Preview Modal ───────────────────────────────────────────────────────── */
+@keyframes preview-modal-sheet-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(18px);
+  }
+}
+
+.preview-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.75rem, 2vw, 1.5rem);
+  background:
+    radial-gradient(circle at top, color-mix(in oklch, var(--accent) 10%, transparent), transparent 35%),
+    color-mix(in oklch, black 58%, transparent);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  animation: modal-backdrop-in 180ms ease-out;
+}
+
+.preview-modal-sheet {
+  width: min(1200px, 100%);
+  max-height: calc(100vh - clamp(1.5rem, 5vw, 3rem));
+  display: flex;
+  flex-direction: column;
+  border-radius: 2rem;
+  border: 1px solid color-mix(in oklch, white 14%, var(--line));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--panel-strong) 95%, white 3%),
+      color-mix(in oklch, var(--panel) 96%, black 2%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+    0 50px 120px -20px color-mix(in oklch, black 72%, transparent);
+  overflow: hidden;
+  animation: preview-modal-sheet-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.preview-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem;
+  border-bottom: 1px solid color-mix(in oklch, white 10%, var(--line));
+}
+
+.preview-modal__eyebrow {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.preview-modal__title {
+  margin: 0.3rem 0 0;
+  font-size: clamp(1rem, 1vw + 0.8rem, 1.35rem);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.preview-modal__close {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklch, var(--card) 82%, white 3%);
+  padding: 0.55rem 0.95rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--foreground);
+  transition:
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.preview-modal__close:hover {
+  background: var(--card-active);
+  transform: translateY(-1px);
+}
+
+.preview-modal__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-height: 0;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.preview-modal__viewport {
+  flex: 1;
+  min-height: min(70vh, 780px);
+  overflow: hidden;
+  border-radius: 1.4rem;
+  border: 1px solid color-mix(in oklch, white 10%, var(--line));
+  background: white;
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 50%, transparent),
+    0 22px 60px -28px color-mix(in oklch, black 40%, transparent);
+}
+
+.preview-modal__viewport iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 /* ─── Prompt Modal ────────────────────────────────────────────────────────── */
 @keyframes modal-backdrop-in {
   from {
@@ -637,7 +813,9 @@ textarea {
   .pulse-dot,
   .build-card--fresh,
   .build-card--fresh::after,
-  .build-card__status-line::before {
+  .build-card__status-line::before,
+  .preview-modal-backdrop,
+  .preview-modal-sheet {
     animation: none;
   }
 
@@ -645,7 +823,9 @@ textarea {
   .ghost-card::before,
   .ghost-card__halo,
   .ghost-card__orb,
-  .ghost-card__plus {
+  .ghost-card__plus,
+  .preview-card-trigger,
+  .preview-modal-sheet {
     transition: none;
   }
 

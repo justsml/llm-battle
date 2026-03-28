@@ -32,7 +32,7 @@ import type {
   ModelResult,
   ModelUsageSnapshot,
 } from "@/lib/types";
-import { readDataUrlMeta } from "@/lib/utils";
+import { readDataUrlMeta, sanitizeTokensPerSecond } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -285,10 +285,11 @@ function snapshotExecutionStats(
     toolErrorCount: tracker.toolErrorCount || undefined,
     textDeltaCount: tracker.textDeltaCount || undefined,
     outputChars: options?.outputChars,
-    tokensPerSecond:
+    tokensPerSecond: sanitizeTokensPerSecond(
       runtimeMs && runtimeMs > 0 && outputTokens != null
         ? outputTokens / (runtimeMs / 1000)
         : undefined,
+    ),
     tools: Object.keys(tools).length ? tools : undefined,
   };
 }
@@ -913,15 +914,16 @@ export async function POST(request: Request) {
   if (useDb) {
     try {
       await ensureSchema();
+      const imageArtifact = await imageUploadPromise;
       await insertRun({
         id: runId,
         userId: session.user.id,
         createdAt,
         status: "running",
         prompt,
-        imageUrl: "",
-        imageObjectKey: "",
-        imageDataUrl: useStorage ? undefined : imageDataUrl,
+        imageUrl: imageArtifact.imageUrl,
+        imageObjectKey: imageArtifact.imageObjectKey,
+        imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
         imageName,
         models,
         results: baseResults,
@@ -963,9 +965,8 @@ export async function POST(request: Request) {
         );
 
         const completedAt = new Date().toISOString();
+        const imageArtifact = await imageUploadPromise;
         if (useDb) {
-          const imageArtifact = await imageUploadPromise;
-
           try {
             await finalizeRun({
               id: runId,
@@ -985,11 +986,14 @@ export async function POST(request: Request) {
           type: "complete",
           runId,
           completedAt,
+          imageUrl: imageArtifact.imageUrl,
+          imageObjectKey: imageArtifact.imageObjectKey,
+          imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
         });
       } catch (error) {
         console.error("Compare stream failed:", error);
+        const imageArtifact = await imageUploadPromise;
         if (useDb) {
-          const imageArtifact = await imageUploadPromise;
           const completedAt = new Date().toISOString();
 
           try {
@@ -1011,6 +1015,9 @@ export async function POST(request: Request) {
           type: "fatal",
           runId,
           error: error instanceof Error ? error.message : "Unexpected compare error.",
+          imageUrl: imageArtifact.imageUrl,
+          imageObjectKey: imageArtifact.imageObjectKey,
+          imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
         });
       } finally {
         controller.close();

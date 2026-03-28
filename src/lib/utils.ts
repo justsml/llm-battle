@@ -14,3 +14,19 @@ export function readDataUrlMeta(dataUrl: string) {
     base64: match[2],
   };
 }
+
+export function sanitizeTokensPerSecond(value?: number) {
+  if (value == null || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+
+  return value;
+}
+
+export function sanitizePositiveCount(value?: number) {
+  if (value == null || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+
+  return Math.round(value);
+}

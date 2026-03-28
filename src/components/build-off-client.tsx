@@ -23,6 +23,7 @@ import {
   supportsAgenticModel,
   toCompareModel,
 } from "@/lib/models";
+import { estimateTokens } from "@/lib/tokenizer";
 import type {
   AgenticOptions,
   CompareModel,
@@ -31,7 +32,7 @@ import type {
   OutputVoteValue,
   SavedRun,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, sanitizeTokensPerSecond } from "@/lib/utils";
 
 const MAX_RUNS = 20;
 const LOCAL_DRAFT_KEY = "build-off:draft:v1";
@@ -41,7 +42,6 @@ const MAX_MODEL_CARDS = 12;
 const RECENT_MODEL_LIMIT = 24;
 const LIVE_TPS_WINDOW_MS = 2500;
 const LIVE_TPS_MIN_WINDOW_MS = 400;
-const ESTIMATED_CHARS_PER_TOKEN = 4;
 
 type OutputMode = "preview" | "raw";
 type CardSize = "s" | "m" | "l" | "xl";
@@ -151,6 +151,10 @@ function withTransition(update: () => void) {
 /** Sanitise a model ID into a valid CSS <custom-ident> for view-transition-name. */
 function cardVtName(id: string) {
   return `card-${id.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+}
+
+function previewVtName(id: string) {
+  return `preview-${id.replace(/[^a-zA-Z0-9-]/g, "-")}`;
 }
 
 function getRunImageSrc(run: SavedRun) {
@@ -914,15 +918,12 @@ function formatCost(value?: number) {
 }
 
 function formatTokensPerSecond(value?: number) {
-  if (value == null) return "—";
+  const sanitizedValue = sanitizeTokensPerSecond(value);
+  if (sanitizedValue == null) return "—";
   return `${new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2,
-  }).format(value)}/s`;
-}
-
-function estimateOutputTokensFromChars(charCount: number) {
-  if (charCount <= 0) return 0;
-  return Math.max(1, Math.round(charCount / ESTIMATED_CHARS_PER_TOKEN));
+    maximumFractionDigits:
+      sanitizedValue >= 100 ? 0 : sanitizedValue >= 10 ? 1 : 2,
+  }).format(sanitizedValue)}/s`;
 }
 
 function formatRatePerMillion(value?: number) {
@@ -1062,6 +1063,7 @@ function ModelPicker({
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const didMountRef = useRef(false);
 
   const selectedCatalogModel =
     catalog.find((model) => model.config === getModelConfig(value)) ?? null;
@@ -1086,11 +1088,19 @@ function ModelPicker({
   }, [isOpen]);
 
   useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
+
+  useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setQuery("");
         setIsOpen(false);
-        onOpenChange?.(false);
       }
     }
 
@@ -1098,7 +1108,6 @@ function ModelPicker({
       if (event.key === "Escape") {
         setQuery("");
         setIsOpen(false);
-        onOpenChange?.(false);
       }
     }
 
@@ -1129,7 +1138,6 @@ function ModelPicker({
           setIsOpen((current) => {
             const next = !current;
             if (!next) setQuery("");
-            onOpenChange?.(next);
             return next;
           })
         }
@@ -1432,6 +1440,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
   const [isAuthActionPending, setIsAuthActionPending] = useState(false);
   const [authError, setAuthError] = useState("");
   const [outputMode, setOutputMode] = useState<OutputMode>("preview");
+  const [activePreviewModelId, setActivePreviewModelId] = useState<string | null>(null);
   const [votePendingByKey, setVotePendingByKey] = useState<Record<string, boolean>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>(
     {},
@@ -1460,7 +1469,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     Record<
       string,
       {
-        outputChars: number;
+        outputText: string;
         points: Array<{ timestampMs: number; outputTokens: number }>;
         peakTokensPerSecond?: number;
       }
@@ -1496,6 +1505,25 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     catalog,
     agenticOptions.enabled,
   );
+  const activePreviewResult = activePreviewModelId
+    ? results.find((entry) => entry.modelId === activePreviewModelId) ?? null
+    : null;
+  const activePreviewModel = activePreviewModelId
+    ? selectedModels.find((entry) => entry.id === activePreviewModelId) ?? null
+    : null;
+  const activePreviewIndex = activePreviewModelId
+    ? selectedModels.findIndex((entry) => entry.id === activePreviewModelId)
+    : -1;
+  const activePreviewId =
+    activePreviewModel && activePreviewIndex >= 0
+      ? `${activePreviewModel.id}-${activePreviewIndex}`
+      : null;
+  const activePreviewErrors = activePreviewId
+    ? previewErrors[activePreviewId] ?? []
+    : [];
+  const activePreviewToolErrors = activePreviewId
+    ? previewToolErrors[activePreviewId] ?? []
+    : [];
 
   useEffect(() => {
     resultsRef.current = results;
@@ -1504,6 +1532,31 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
   useEffect(() => {
     previewOverridesRef.current = previewOverrides;
   }, [previewOverrides]);
+
+  useEffect(() => {
+    if (outputMode !== "preview" && activePreviewModelId) {
+      setActivePreviewModelId(null);
+    }
+  }, [activePreviewModelId, outputMode]);
+
+  useEffect(() => {
+    if (!activePreviewModelId) return;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        withTransition(() => setActivePreviewModelId(null));
+      }
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activePreviewModelId]);
 
   useEffect(() => {
     if (!catalog.length) return;
@@ -2108,13 +2161,13 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
 
     const now = Date.now();
     const existing = liveStreamMetricBuffersRef.current[modelId] ?? {
-      outputChars: 0,
+      outputText: "",
       points: [],
       peakTokensPerSecond: undefined,
     };
 
-    existing.outputChars += delta.length;
-    const outputTokens = estimateOutputTokensFromChars(existing.outputChars);
+    existing.outputText += delta;
+    const outputTokens = estimateTokens(existing.outputText);
     existing.points.push({ timestampMs: now, outputTokens });
     existing.points = existing.points.filter(
       (point) => now - point.timestampMs <= LIVE_TPS_WINDOW_MS,
@@ -2144,8 +2197,9 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
 
   function syncLiveStreamMetricFromResult(result: ModelResult) {
     const peakTokensPerSecond =
-      liveStreamMetricBuffersRef.current[result.modelId]?.peakTokensPerSecond ??
-      result.stats?.tokensPerSecond;
+      sanitizeTokensPerSecond(
+        liveStreamMetricBuffersRef.current[result.modelId]?.peakTokensPerSecond,
+      ) ?? sanitizeTokensPerSecond(result.stats?.tokensPerSecond);
 
     setLiveStreamMetrics((current) => ({
       ...current,
@@ -2162,7 +2216,8 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     const outputTokens = result.usage?.outputTokens ?? liveMetric?.outputTokens;
     const totalTokens = result.usage?.totalTokens ?? liveMetric?.totalTokens;
     const peakTokensPerSecond =
-      liveMetric?.peakTokensPerSecond ?? result.stats?.tokensPerSecond;
+      sanitizeTokensPerSecond(liveMetric?.peakTokensPerSecond) ??
+      sanitizeTokensPerSecond(result.stats?.tokensPerSecond);
 
     return {
       outputTokens,
@@ -3138,6 +3193,29 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
               replaceRunId(persistedRunId, event.runId);
               persistedRunId = event.runId;
             }
+            if (
+              (event.type === "complete" || event.type === "fatal") &&
+              typeof event.runId === "string" &&
+              event.runId === persistedRunId
+            ) {
+              updateRun(persistedRunId, (existing) => ({
+                ...existing,
+                imageUrl:
+                  typeof event.imageUrl === "string" && event.imageUrl
+                    ? event.imageUrl
+                    : existing.imageUrl,
+                imageObjectKey:
+                  typeof event.imageObjectKey === "string" && event.imageObjectKey
+                    ? event.imageObjectKey
+                    : existing.imageObjectKey,
+                imageDataUrl:
+                  typeof event.imageDataUrl === "string" && event.imageDataUrl
+                    ? event.imageDataUrl
+                    : typeof event.imageUrl === "string" && event.imageUrl
+                      ? undefined
+                      : existing.imageDataUrl,
+              }));
+            }
             if (event.type === "tool-call") {
               void handleToolCallEvent(event);
             }
@@ -3879,6 +3957,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
           const hasHtml = looksLikeHtml(
             unwrapHtmlCodeFence(effectivePreviewMarkup),
           );
+          const isPreviewOpen = activePreviewModelId === model.id;
           const isDragged = dragSourceIndex === index;
           const isDragTarget =
             dragOverIndex === index && dragSourceIndex !== index;
@@ -4042,54 +4121,82 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                           ))}
                         </div>
                       ) : null}
-                      <OutputViewport
-                        className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
-                        contentClassName="overflow-hidden"
-                        contentStyle={cardViewportStyle}
-                        title={`${result.label} preview`}
-                      >
-                        <div className="relative h-full w-full">
-                          <LiveHtmlPreview
-                            iframeRef={(element) => {
-                              previewFrameRefs.current[previewId] = element;
-                            }}
-                            isStreaming={result.status === "streaming"}
-                            markup={result.text}
-                            overrideMarkup={previewOverrides[model.id]}
-                            previewId={previewId}
+                      {isPreviewOpen ? (
+                        <div
+                          className="preview-card-placeholder"
+                          style={{ minHeight: cardSizeConfig.viewportHeight }}
+                        >
+                          <span>Preview opened</span>
+                        </div>
+                      ) : (
+                        <div
+                          className="preview-card-shell"
+                          style={{ viewTransitionName: previewVtName(model.id) }}
+                        >
+                          <OutputViewport
+                            className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
+                            contentClassName="overflow-hidden"
+                            contentStyle={cardViewportStyle}
                             title={`${result.label} preview`}
-                          />
-                          {cardPreviewToolErrors.length ? (
-                            <div className="absolute inset-4 z-20 flex items-start justify-center">
-                              <div className="w-full max-w-xl rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,white_72%,var(--danger)_10%)] p-3 text-sm text-(--foreground) shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_18%,transparent)] backdrop-blur-md">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div>
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--danger)">
-                                      Tool call failed
-                                    </p>
-                                    <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_88%,black)]">
-                                      {cardPreviewToolErrors.map((msg, i) => (
-                                        <p key={`${previewId}-tool-err-${i}`}>
-                                          {msg}
+                          >
+                            <button
+                              aria-label={`Open ${result.label} preview`}
+                              className="preview-card-trigger"
+                              onClick={() => {
+                                withTransition(() =>
+                                  setActivePreviewModelId(model.id),
+                                );
+                              }}
+                              type="button"
+                            >
+                              <span className="preview-card-trigger__hint">
+                                Open live preview
+                              </span>
+                            </button>
+                            <div className="relative h-full w-full">
+                              <LiveHtmlPreview
+                                iframeRef={(element) => {
+                                  previewFrameRefs.current[previewId] = element;
+                                }}
+                                isStreaming={result.status === "streaming"}
+                                markup={result.text}
+                                overrideMarkup={previewOverrides[model.id]}
+                                previewId={previewId}
+                                title={`${result.label} preview`}
+                              />
+                              {cardPreviewToolErrors.length ? (
+                                <div className="absolute inset-4 z-20 flex items-start justify-center">
+                                  <div className="w-full max-w-xl rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,white_72%,var(--danger)_10%)] p-3 text-sm text-(--foreground) shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_18%,transparent)] backdrop-blur-md">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--danger)">
+                                          Tool call failed
                                         </p>
-                                      ))}
+                                        <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_88%,black)]">
+                                          {cardPreviewToolErrors.map((msg, i) => (
+                                            <p key={`${previewId}-tool-err-${i}`}>
+                                              {msg}
+                                            </p>
+                                          ))}
+                                        </div>
+                                      </div>
+                                      <button
+                                        className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_30%,transparent)] bg-white/70 px-3 py-1 text-xs font-medium text-(--danger) transition hover:bg-white"
+                                        onClick={() =>
+                                          dismissPreviewToolErrors(previewId)
+                                        }
+                                        type="button"
+                                      >
+                                        Dismiss
+                                      </button>
                                     </div>
                                   </div>
-                                  <button
-                                    className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_30%,transparent)] bg-white/70 px-3 py-1 text-xs font-medium text-(--danger) transition hover:bg-white"
-                                    onClick={() =>
-                                      dismissPreviewToolErrors(previewId)
-                                    }
-                                    type="button"
-                                  >
-                                    Dismiss
-                                  </button>
                                 </div>
-                              </div>
+                              ) : null}
                             </div>
-                          ) : null}
+                          </OutputViewport>
                         </div>
-                      </OutputViewport>
+                      )}
                     </div>
                   ) : (
                     <div className="p-3">
@@ -4285,6 +4392,87 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
           </button>
         ) : null}
       </div>
+
+      {activePreviewResult && activePreviewModel && activePreviewId ? (
+        <div
+          className="preview-modal-backdrop"
+          onClick={() => withTransition(() => setActivePreviewModelId(null))}
+        >
+          <div
+            className="preview-modal-sheet"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="preview-modal__header">
+              <div>
+                <p className="preview-modal__eyebrow">Interactive preview</p>
+                <h2 className="preview-modal__title">
+                  {activePreviewResult.label}
+                </h2>
+              </div>
+              <button
+                className="preview-modal__close"
+                onClick={() => withTransition(() => setActivePreviewModelId(null))}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="preview-modal__body">
+              {activePreviewErrors.length ? (
+                <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
+                  {activePreviewErrors.map((msg, i) => (
+                    <p key={`${activePreviewId}-modal-err-${i}`}>{msg}</p>
+                  ))}
+                </div>
+              ) : null}
+
+              <div
+                className="preview-modal__viewport"
+                style={{ viewTransitionName: previewVtName(activePreviewModel.id) }}
+              >
+                <LiveHtmlPreview
+                  iframeRef={(element) => {
+                    previewFrameRefs.current[activePreviewId] = element;
+                  }}
+                  interactive
+                  isStreaming={activePreviewResult.status === "streaming"}
+                  markup={activePreviewResult.text}
+                  overrideMarkup={previewOverrides[activePreviewModel.id]}
+                  previewId={activePreviewId}
+                  title={`${activePreviewResult.label} interactive preview`}
+                />
+              </div>
+
+              {activePreviewToolErrors.length ? (
+                <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,white_72%,var(--danger)_10%)] p-3 text-sm text-(--foreground) shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_18%,transparent)] backdrop-blur-md">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--danger)">
+                        Tool call failed
+                      </p>
+                      <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_88%,black)]">
+                        {activePreviewToolErrors.map((msg, i) => (
+                          <p key={`${activePreviewId}-modal-tool-err-${i}`}>
+                            {msg}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_30%,transparent)] bg-white/70 px-3 py-1 text-xs font-medium text-(--danger) transition hover:bg-white"
+                      onClick={() => dismissPreviewToolErrors(activePreviewId)}
+                      type="button"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* ── Prompt modal ─────────────────────────────────────────────────── */}
       {isPromptModalOpen ? (
