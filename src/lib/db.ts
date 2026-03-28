@@ -552,6 +552,70 @@ export async function listRuns(userId: string, limit = 20) {
   }));
 }
 
+export async function getRun(userId: string, runId: string) {
+  const sql = getClient();
+  const rows = await sql`
+    SELECT
+      id,
+      user_id,
+      created_at,
+      completed_at,
+      status,
+      prompt,
+      image_url,
+      image_object_key,
+      image_data_url,
+      image_name,
+      models,
+      results
+    FROM runs
+    WHERE user_id = ${userId}
+      AND id = ${runId}
+    LIMIT 1
+  `;
+
+  const row = ((rows as unknown as RunRow[])[0] ?? null);
+  if (!row) return null;
+
+  const normalizedRows = await listRunModelResults(row.id);
+  const rowsByIndex = new Map(
+    normalizedRows.map((result) => [result.model_index, result]),
+  );
+  const votes = await listRunModelUserVotes(userId, [row.id]);
+  const userVotesByKey = new Map(
+    votes.map((vote) => [`${vote.run_id}:${vote.model_index}`, vote.vote]),
+  );
+
+  return {
+    ...row,
+    results: row.models.map((model, index) => {
+      const normalizedResult = rowsByIndex.get(index);
+      if (normalizedResult) {
+        const next = toModelResult(normalizedResult);
+        const userVote = userVotesByKey.get(`${row.id}:${index}`);
+        return userVote == null
+          ? next
+          : {
+              ...next,
+              vote: {
+                ...(next.vote ?? { score: 0, upvotes: 0, downvotes: 0 }),
+                userVote,
+              },
+            };
+      }
+
+      return (
+        row.results[index] ?? {
+          modelId: model.id,
+          label: model.label,
+          text: "",
+          status: "idle" as const,
+        }
+      );
+    }),
+  };
+}
+
 export async function finalizeRun(params: {
   id: string;
   completedAt: string;

@@ -110,7 +110,7 @@ export function getModelRequestOptions(model: Pick<CompareModel, "id" | "config"
 }
 
 export const DEFAULT_PROMPT =
-  "You are given a UI screenshot and must recreate it as a single self-contained HTML artifact for realtime preview. Return only runnable HTML starting with <!DOCTYPE html> and ending with </html> with no markdown fences or commentary. Use semantic HTML, inline <style>, and optional inline <script>. Do not rely on external assets, frameworks, CDNs, or network requests. Match the screenshot's layout, spacing, hierarchy, typography, colors, borders, and interactions as closely as possible. Prefer stable, progressively renderable markup so partial streaming still paints useful UI early. If some details are unclear, make tasteful product-quality decisions and keep the result polished and responsive.";
+  "You are given a UI screenshot and must recreate it as a single self-contained HTML artifact for realtime preview. Return only runnable HTML starting with <!DOCTYPE html> and ending with </html> with no markdown fences or commentary. Use semantic HTML, inline <style>, and optional inline <script>. Do not rely on external assets, frameworks, CDNs, or network requests. If you must reference any external URL, include crossorigin=\"anonymous\" on the relevant HTML element. Match the screenshot's layout, spacing, hierarchy, typography, colors, borders, and interactions as closely as possible. Prefer stable, progressively renderable markup so partial streaming still paints useful UI early. If some details are unclear, make tasteful product-quality decisions and keep the result polished and responsive.";
 
 export const DEFAULT_MODELS: CompareModel[] = [
   "openai/gpt-5.4",

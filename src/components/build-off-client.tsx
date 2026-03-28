@@ -2,8 +2,10 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import {
   type CSSProperties,
+  useCallback,
   useDeferredValue,
   useEffect,
   useEffectEvent,
@@ -12,8 +14,10 @@ import {
   type ChangeEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 
 import { authClient } from "@/lib/auth-client";
+import { estimateModelCost } from "@/lib/gateway-models";
 import {
   DEFAULT_MODELS,
   DEFAULT_PROMPT,
@@ -29,6 +33,7 @@ import type {
   CompareModel,
   GatewayModel,
   ModelResult,
+  OutputDomCssStats,
   OutputVoteValue,
   SavedRun,
 } from "@/lib/types";
@@ -43,7 +48,7 @@ const RECENT_MODEL_LIMIT = 24;
 const LIVE_TPS_WINDOW_MS = 2500;
 const LIVE_TPS_MIN_WINDOW_MS = 400;
 
-type OutputMode = "preview" | "raw";
+type OutputMode = "preview" | "raw" | "thinking";
 type CardSize = "s" | "m" | "l" | "xl";
 type ModelCardModeKey = "standard" | "agentic";
 type ModelSortMode = "released" | "name" | "provider";
@@ -73,6 +78,13 @@ type LiveStreamMetricSnapshot = {
   peakTokensPerSecond?: number;
 };
 
+type RectSnapshot = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
 type ModelCardWorkspaceState = {
   activeRunId: string | null;
   selectedModels: CompareModel[];
@@ -88,11 +100,12 @@ type BuildOffClientProps = {
     githubConfigured: boolean;
     allowLocalDevAutoAuth: boolean;
   };
+  initialRunId: string | null;
 };
 
 const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
   enabled: false,
-  maxTurns: 8,
+  maxTurns: 6,
   todoListTool: false,
 };
 
@@ -153,8 +166,55 @@ function cardVtName(id: string) {
   return `card-${id.replace(/[^a-zA-Z0-9-]/g, "-")}`;
 }
 
-function previewVtName(id: string) {
-  return `preview-${id.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+function snapshotRect(element: Element | null): RectSnapshot | null {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function shouldReduceMotion() {
+  return (
+    typeof window !== "undefined"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+function animateBetweenRects(
+  element: HTMLElement,
+  from: RectSnapshot,
+  to: RectSnapshot,
+  direction: "open" | "close",
+) {
+  const deltaX = from.left - to.left;
+  const deltaY = from.top - to.top;
+  const scaleX = from.width / Math.max(to.width, 1);
+  const scaleY = from.height / Math.max(to.height, 1);
+
+  return element.animate(
+    [
+      {
+        opacity: direction === "open" ? 0.78 : 1,
+        transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})`,
+      },
+      {
+        opacity: direction === "open" ? 1 : 0.82,
+        transform: "translate(0px, 0px) scale(1, 1)",
+      },
+    ],
+    {
+      duration: direction === "open" ? 320 : 220,
+      easing:
+        direction === "open"
+          ? "cubic-bezier(0.22, 1, 0.36, 1)"
+          : "cubic-bezier(0.4, 0, 1, 1)",
+      fill: "both",
+    },
+  );
 }
 
 function getRunImageSrc(run: SavedRun) {
@@ -166,6 +226,7 @@ function createEmptyResult(model: CompareModel): ModelResult {
     modelId: model.id,
     label: model.label,
     text: "",
+    thinking: "",
     status: "idle",
     vote: {
       score: 0,
@@ -199,6 +260,10 @@ function createInitialModelCardWorkspaceState(
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getRunHref(runId: string) {
+  return `/runs/${encodeURIComponent(runId)}`;
 }
 
 function toDataUrl(file: File) {
@@ -578,7 +643,7 @@ function unwrapHtmlCodeFence(markup: string) {
  * of whether the model used single quotes, double quotes, or extra whitespace.
  */
 function sanitizePreviewMarkup(markup: string): string {
-  return markup.replace(
+  const normalizedAttributes = markup.replace(
     /\b(href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
     (match, attr, doubleQuoted, singleQuoted, unquoted) => {
       const rawValue = doubleQuoted ?? singleQuoted ?? unquoted ?? "";
@@ -600,6 +665,19 @@ function sanitizePreviewMarkup(markup: string): string {
       }
 
       return `${attr}=${sanitizedValue}`;
+    },
+  );
+
+  // Cross-origin assets can taint the canvas used for screenshot export.
+  // Add an anonymous crossorigin hint to common fetchable elements when missing.
+  return normalizedAttributes.replace(
+    /<(img|audio|video|link|script)\b(?![^>]*\bcrossorigin\s*=)([^>]*)>/gi,
+    (match, tagName, attrs) => {
+      if (!/\b(?:src|href)\s*=/i.test(attrs)) {
+        return match;
+      }
+
+      return `<${tagName} crossorigin="anonymous"${attrs}>`;
     },
   );
 }
@@ -926,6 +1004,11 @@ function formatTokensPerSecond(value?: number) {
   }).format(sanitizedValue)}/s`;
 }
 
+function sumDefinedNumber(current: number | undefined, next: number | undefined) {
+  if (next == null) return current;
+  return (current ?? 0) + next;
+}
+
 function formatRatePerMillion(value?: number) {
   if (value == null) return "—";
 
@@ -961,6 +1044,49 @@ function readEventStats(event: Record<string, unknown>): ModelResult["stats"] {
   return typeof event.stats === "object" && event.stats
     ? (event.stats as ModelResult["stats"])
     : undefined;
+}
+
+function readEventDomCssStats(
+  event: Record<string, unknown>,
+): ModelResult["domCssStats"] {
+  return typeof event.domCssStats === "object" && event.domCssStats
+    ? (event.domCssStats as ModelResult["domCssStats"])
+    : undefined;
+}
+
+function formatStatCount(value?: number) {
+  if (value == null) return "-";
+  return value.toLocaleString();
+}
+
+function formatByteCount(value?: number) {
+  if (value == null) return "-";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value >= 10 * 1024 ? 0 : 1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildDomCssStatItems(stats?: OutputDomCssStats) {
+  if (!stats) return [];
+
+  return [
+    ["HTML size", formatByteCount(stats.htmlBytes)],
+    ["DOM nodes", formatStatCount(stats.domNodeCount)],
+    ["Elements", formatStatCount(stats.elementCount)],
+    ["Text nodes", formatStatCount(stats.textNodeCount)],
+    ["Comments", formatStatCount(stats.commentCount)],
+    ["Max depth", formatStatCount(stats.maxDomDepth)],
+    ["<style>", formatStatCount(stats.styleTagCount)],
+    ["Inline style attrs", formatStatCount(stats.inlineStyleAttrCount)],
+    ["Stylesheet links", formatStatCount(stats.stylesheetLinkCount)],
+    ["<script>", formatStatCount(stats.scriptTagCount)],
+    ["Images/SVG", formatStatCount(stats.imageCount)],
+    ["Buttons", formatStatCount(stats.buttonCount)],
+    ["Inputs", formatStatCount(stats.inputCount)],
+    ["Forms", formatStatCount(stats.formCount)],
+    ["IDs", formatStatCount(stats.idCount)],
+    ["Class attrs", formatStatCount(stats.classCount)],
+  ] satisfies Array<[string, string]>;
 }
 
 function createAgenticCardState(options: AgenticOptions): AgenticCardState {
@@ -1404,9 +1530,15 @@ function OutputViewport({
   );
 }
 
-export function BuildOffClient({ authConfig }: BuildOffClientProps) {
+export function BuildOffClient({
+  authConfig,
+  initialRunId,
+}: BuildOffClientProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   const { data: sessionData, isPending: isSessionPending } =
     authClient.useSession();
+  const [isClient, setIsClient] = useState(false);
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [imageName, setImageName] = useState("Paste or upload a screenshot");
@@ -1425,6 +1557,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
   const [errorMessage, setErrorMessage] = useState("");
   const [modelsError, setModelsError] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isSiteMenuOpen, setIsSiteMenuOpen] = useState(false);
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
   const [cardSize, setCardSize] = useState<CardSize>("m");
   const [freshModelIds, setFreshModelIds] = useState<string[]>([]);
@@ -1436,11 +1569,13 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
   const [isRunning, setIsRunning] = useState(false);
   const [nowMs, setNowMs] = useState(0);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
+  const [isHydratingRouteRun, setIsHydratingRouteRun] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isAuthActionPending, setIsAuthActionPending] = useState(false);
   const [authError, setAuthError] = useState("");
   const [outputMode, setOutputMode] = useState<OutputMode>("preview");
   const [activePreviewModelId, setActivePreviewModelId] = useState<string | null>(null);
+  const [isPreviewClosing, setIsPreviewClosing] = useState(false);
   const [votePendingByKey, setVotePendingByKey] = useState<Record<string, boolean>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<string, string[]>>(
     {},
@@ -1464,7 +1599,15 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     agentic: createInitialModelCardWorkspaceState(),
   }));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const siteMenuRef = useRef<HTMLDivElement>(null);
+  const previewCardShellRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const previewFrameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
+  const activePreviewViewportRef = useRef<HTMLDivElement | null>(null);
+  const previewOpenRectRef = useRef<RectSnapshot | null>(null);
+  const previewViewportAnimationRef = useRef<Animation | null>(null);
+  const previewBackdropAnimationRef = useRef<Animation | null>(null);
+  const activePreviewModelIdRef = useRef<string | null>(null);
+  const isPreviewClosingRef = useRef(false);
   const liveStreamMetricBuffersRef = useRef<
     Record<
       string,
@@ -1487,6 +1630,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     >
   >({});
   const lastSavedDraftRef = useRef<string | null>(null);
+  const routeRunHydratedRef = useRef<string | null>(null);
   const restoredDraftRef = useRef(false);
   const attemptedLocalDevSignInRef = useRef(false);
   const pendingDraftModelConfigsByModeRef = useRef<
@@ -1525,9 +1669,75 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     ? previewToolErrors[activePreviewId] ?? []
     : [];
 
+  const closePreview = useCallback(() => {
+    const currentPreviewModelId = activePreviewModelIdRef.current;
+    if (!currentPreviewModelId || isPreviewClosingRef.current) return;
+
+    if (shouldReduceMotion()) {
+      setActivePreviewModelId(null);
+      return;
+    }
+
+    const viewport = activePreviewViewportRef.current;
+    const sourceRect = snapshotRect(previewCardShellRefs.current[currentPreviewModelId]);
+    const currentRect = snapshotRect(viewport);
+    if (!viewport || !sourceRect || !currentRect) {
+      setActivePreviewModelId(null);
+      return;
+    }
+
+    setIsPreviewClosing(true);
+    previewViewportAnimationRef.current?.cancel();
+    previewViewportAnimationRef.current = animateBetweenRects(
+      viewport,
+      sourceRect,
+      currentRect,
+      "close",
+    );
+
+    const backdrop = viewport.closest(".preview-modal-backdrop");
+    if (backdrop instanceof HTMLElement) {
+      previewBackdropAnimationRef.current?.cancel();
+      previewBackdropAnimationRef.current = backdrop.animate(
+        [{ opacity: 1 }, { opacity: 0 }],
+        {
+          duration: 180,
+          easing: "ease-out",
+          fill: "both",
+        },
+      );
+    }
+
+    const finalizeClose = () => {
+      previewViewportAnimationRef.current = null;
+      previewBackdropAnimationRef.current = null;
+      setIsPreviewClosing(false);
+      setActivePreviewModelId(null);
+    };
+
+    previewViewportAnimationRef.current.addEventListener("finish", finalizeClose, {
+      once: true,
+    });
+    previewViewportAnimationRef.current.addEventListener("cancel", finalizeClose, {
+      once: true,
+    });
+  }, []);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
   useEffect(() => {
     resultsRef.current = results;
   }, [results]);
+
+  useEffect(() => {
+    activePreviewModelIdRef.current = activePreviewModelId;
+  }, [activePreviewModelId]);
+
+  useEffect(() => {
+    isPreviewClosingRef.current = isPreviewClosing;
+  }, [isPreviewClosing]);
 
   useEffect(() => {
     previewOverridesRef.current = previewOverrides;
@@ -1535,16 +1745,16 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
 
   useEffect(() => {
     if (outputMode !== "preview" && activePreviewModelId) {
-      setActivePreviewModelId(null);
+      closePreview();
     }
-  }, [activePreviewModelId, outputMode]);
+  }, [activePreviewModelId, closePreview, outputMode]);
 
   useEffect(() => {
     if (!activePreviewModelId) return;
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        withTransition(() => setActivePreviewModelId(null));
+        closePreview();
       }
     }
 
@@ -1555,6 +1765,35 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activePreviewModelId, closePreview]);
+
+  useEffect(() => {
+    if (!activePreviewModelId || shouldReduceMotion()) {
+      previewOpenRectRef.current = null;
+      return;
+    }
+
+    const sourceRect = previewOpenRectRef.current;
+    const viewport = activePreviewViewportRef.current;
+    if (!sourceRect || !viewport) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const targetRect = snapshotRect(viewport);
+      if (!targetRect) return;
+
+      previewViewportAnimationRef.current?.cancel();
+      previewViewportAnimationRef.current = animateBetweenRects(
+        viewport,
+        sourceRect,
+        targetRect,
+        "open",
+      );
+      previewOpenRectRef.current = null;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
     };
   }, [activePreviewModelId]);
 
@@ -1629,6 +1868,57 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     setPreviewOverrides(state.previewOverrides);
   }
 
+  const syncRouteToRun = useCallback((runId: string | null, replace = false) => {
+    const target = runId ? getRunHref(runId) : "/";
+    if (pathname === target) return;
+
+    if (replace) {
+      router.replace(target, { scroll: false });
+      return;
+    }
+
+    router.push(target, { scroll: false });
+  }, [pathname, router]);
+
+  const hydrateRouteRun = useCallback(async (runId: string) => {
+    if (!signedInUser) return;
+
+    const existing = runs.find((run) => run.id === runId);
+    if (existing) {
+      hydrateRun(existing, { syncRoute: false });
+      routeRunHydratedRef.current = runId;
+      return;
+    }
+
+    setIsHydratingRouteRun(true);
+    setRunsError("");
+
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        run?: SavedRun;
+        error?: string;
+      } | null;
+
+      if (!response.ok || !payload?.run) {
+        throw new Error(payload?.error ?? "Unable to load that run.");
+      }
+
+      persistRun(payload.run);
+      hydrateRun(payload.run, { syncRoute: false });
+      routeRunHydratedRef.current = runId;
+    } catch (error) {
+      setRunsError(
+        error instanceof Error ? error.message : "Unable to load that run.",
+      );
+      syncRouteToRun(null, true);
+    } finally {
+      setIsHydratingRouteRun(false);
+    }
+  }, [hydrateRun, runs, signedInUser, syncRouteToRun]);
+
   function handleToggleAgenticMode() {
     const currentModeKey = getModelCardModeKey(agenticOptions.enabled);
     const nextModeKey =
@@ -1676,18 +1966,22 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
       const serverRuns = payload?.runs ?? [];
       setRuns(serverRuns);
 
+      if (initialRunId) {
+        const requestedRun = serverRuns.find((run) => run.id === initialRunId);
+        if (requestedRun) {
+          hydrateRun(requestedRun, { syncRoute: false });
+          routeRunHydratedRef.current = initialRunId;
+          return;
+        }
+      }
+
       if (
+        !initialRunId &&
         options?.hydrateLatest &&
         serverRuns.length &&
         !restoredDraftRef.current
       ) {
-        const first = serverRuns[0];
-        setActiveRunId(first.id);
-        setPrompt(first.prompt);
-        setImageDataUrl(getRunImageSrc(first));
-        setImageName(first.imageName);
-        setSelectedModels(first.models);
-        setResults(first.results);
+        hydrateRun(serverRuns[0], { syncRoute: false });
       }
     } catch (error) {
       setRunsError(
@@ -1774,7 +2068,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
           maxTurns: Math.max(
             1,
             Math.min(
-              8,
+              12,
               Math.round(
                 draft.agenticOptions.maxTurns ??
                   DEFAULT_AGENTIC_OPTIONS.maxTurns,
@@ -1807,11 +2101,52 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
       setRuns([]);
       setRunsError("");
       setIsLoadingRuns(false);
+      routeRunHydratedRef.current = null;
       return;
     }
 
     loadRunsForCurrentSession({ hydrateLatest: true });
   }, [isSessionPending, signedInUserId]);
+
+  useEffect(() => {
+    if (isSessionPending || !signedInUserId) return;
+
+    if (!initialRunId) {
+      routeRunHydratedRef.current = null;
+      return;
+    }
+
+    if (routeRunHydratedRef.current === initialRunId) return;
+    void hydrateRouteRun(initialRunId);
+  }, [hydrateRouteRun, initialRunId, isSessionPending, signedInUserId]);
+
+  useEffect(() => {
+    if (!isSiteMenuOpen) return;
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!siteMenuRef.current?.contains(event.target as Node)) {
+        setIsSiteMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsSiteMenuOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isSiteMenuOpen]);
+
+  useEffect(() => {
+    setIsSiteMenuOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     if (!authConfig.allowLocalDevAutoAuth) return;
@@ -2140,6 +2475,12 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     });
   }
 
+  function openPreview(modelId: string) {
+    if (isPreviewClosing) return;
+    previewOpenRectRef.current = snapshotRect(previewCardShellRefs.current[modelId]);
+    setActivePreviewModelId(modelId);
+  }
+
   function resetLiveStreamMetric(modelId: string) {
     delete liveStreamMetricBuffersRef.current[modelId];
     setLiveStreamMetrics((current) => {
@@ -2214,7 +2555,12 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
   function getDisplayOutputMetrics(result: ModelResult) {
     const liveMetric = liveStreamMetrics[result.modelId];
     const outputTokens = result.usage?.outputTokens ?? liveMetric?.outputTokens;
-    const totalTokens = result.usage?.totalTokens ?? liveMetric?.totalTokens;
+    const estimatedTotalTokens =
+      outputTokens != null
+        ? (result.usage?.inputTokens ?? 0) + outputTokens
+        : undefined;
+    const totalTokens =
+      result.usage?.totalTokens ?? liveMetric?.totalTokens ?? estimatedTotalTokens;
     const peakTokensPerSecond =
       sanitizeTokensPerSecond(liveMetric?.peakTokensPerSecond) ??
       sanitizeTokensPerSecond(result.stats?.tokensPerSecond);
@@ -2226,7 +2572,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
       outputEstimated:
         result.usage?.outputTokens == null && liveMetric?.outputTokens != null,
       totalEstimated:
-        result.usage?.totalTokens == null && liveMetric?.totalTokens != null,
+        result.usage?.totalTokens == null && totalTokens != null,
     };
   }
 
@@ -2310,6 +2656,9 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     setActiveRunId((current) =>
       current === previousRunId ? nextRunId : current,
     );
+    routeRunHydratedRef.current =
+      routeRunHydratedRef.current === previousRunId ? nextRunId : routeRunHydratedRef.current;
+    syncRouteToRun(nextRunId, true);
   }
 
   function applyVoteSummaryToResult(
@@ -2641,6 +2990,9 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
       return {
         ...result,
         status: "streaming" as const,
+        text: "",
+        thinking: "",
+        repairedText: undefined,
         startedAt:
           typeof event.startedAt === "string" ? event.startedAt : undefined,
         error: undefined,
@@ -2653,6 +3005,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
         usage: undefined,
         costs: undefined,
         stats: readEventStats(event),
+        domCssStats: undefined,
       };
     }
 
@@ -2678,6 +3031,27 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
       return {
         ...result,
         text: "",
+        stats: readEventStats(event) ?? result.stats,
+      };
+    }
+
+    if (event.type === "thinking-delta") {
+      return {
+        ...result,
+        thinking:
+          (result.thinking ?? "")
+          + (typeof event.delta === "string" ? event.delta : ""),
+        stats: readEventStats(event) ?? result.stats,
+      };
+    }
+
+    if (event.type === "repair-complete") {
+      return {
+        ...result,
+        repairedText:
+          typeof event.repairedText === "string"
+            ? event.repairedText
+            : result.repairedText,
         stats: readEventStats(event) ?? result.stats,
       };
     }
@@ -2729,6 +3103,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
             ? (event.costs as ModelResult["costs"])
             : result.costs,
         stats: readEventStats(event) ?? result.stats,
+        domCssStats: readEventDomCssStats(event) ?? result.domCssStats,
       };
     }
 
@@ -2763,6 +3138,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
             ? (event.costs as ModelResult["costs"])
             : result.costs,
         stats: readEventStats(event) ?? result.stats,
+        domCssStats: readEventDomCssStats(event) ?? result.domCssStats,
       };
     }
 
@@ -2779,7 +3155,13 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     setErrorMessage("");
   }
 
-  function hydrateRun(run: SavedRun) {
+  const hydrateRun = useCallback((
+    run: SavedRun,
+    options?: {
+      syncRoute?: boolean;
+      replaceRoute?: boolean;
+    },
+  ) => {
     setActiveRunId(run.id);
     setPrompt(run.prompt);
     setImageDataUrl(getRunImageSrc(run));
@@ -2793,7 +3175,11 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     setPreviewOverrides({});
     setErrorMessage("");
     setIsHistoryOpen(false);
-  }
+
+    if (options?.syncRoute !== false) {
+      syncRouteToRun(run.id, options?.replaceRoute);
+    }
+  }, [syncRouteToRun]);
 
   function handleModelChange(index: number, nextModelConfig: string) {
     const currentModelConfig = getModelConfig(selectedModels[index]);
@@ -3143,6 +3529,8 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     setErrorMessage("");
     setIsHistoryOpen(false);
     setIsRunning(true);
+    routeRunHydratedRef.current = runId;
+    syncRouteToRun(runId);
     persistRun(run);
 
     void (async () => {
@@ -3382,6 +3770,8 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     setPreviewOverrides({});
     setActiveRunId(null);
     setOpenPickerIndex(null);
+    routeRunHydratedRef.current = null;
+    syncRouteToRun(null);
   }
 
   const comparisonRows: Array<{
@@ -3450,6 +3840,65 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
     { label: "Cost", render: (result) => formatCost(result.costs?.total) },
     { label: "Finish", render: (result) => result.finishReason ?? "—" },
   ];
+
+  const aggregateStatus = results.reduce(
+    (summary, result, index) => {
+      if (result.status === "idle") {
+        return summary;
+      }
+
+      const tokenMetrics = getDisplayOutputMetrics(result);
+      const catalogModel =
+        catalog.find(
+          (entry) => entry.config === getModelConfig(selectedModels[index]),
+        ) ?? null;
+      const resolvedTotalTokens =
+        result.usage?.totalTokens ?? tokenMetrics.totalTokens;
+      const inferredInputTokens =
+        result.usage?.inputTokens ??
+        (resolvedTotalTokens != null && tokenMetrics.outputTokens != null
+          ? Math.max(resolvedTotalTokens - tokenMetrics.outputTokens, 0)
+          : undefined);
+      const resolvedCost =
+        result.costs?.total ??
+        (catalogModel
+          ? estimateModelCost(catalogModel.pricing, {
+              inputTokens: inferredInputTokens,
+              outputTokens: tokenMetrics.outputTokens,
+              totalTokens: resolvedTotalTokens,
+              cacheReadTokens: result.usage?.cacheReadTokens,
+              cacheWriteTokens: result.usage?.cacheWriteTokens,
+            })?.total
+          : undefined);
+
+      return {
+        totalTokens: sumDefinedNumber(summary.totalTokens, resolvedTotalTokens),
+        totalCost: sumDefinedNumber(summary.totalCost, resolvedCost),
+        hasEstimatedTokens:
+          summary.hasEstimatedTokens || Boolean(tokenMetrics.totalEstimated),
+        hasEstimatedCost:
+          summary.hasEstimatedCost || (resolvedCost != null && result.costs?.total == null),
+        completedCount:
+          summary.completedCount + (result.status === "done" ? 1 : 0),
+        streamingCount:
+          summary.streamingCount + (result.status === "streaming" ? 1 : 0),
+        errorCount: summary.errorCount + (result.status === "error" ? 1 : 0),
+      };
+    },
+    {
+      totalTokens: undefined as number | undefined,
+      totalCost: undefined as number | undefined,
+      hasEstimatedTokens: false,
+      hasEstimatedCost: false,
+      completedCount: 0,
+      streamingCount: 0,
+      errorCount: 0,
+    },
+  );
+  const aggregateActiveCount =
+    aggregateStatus.completedCount +
+    aggregateStatus.streamingCount +
+    aggregateStatus.errorCount;
 
   if (isSessionPending) {
     return (
@@ -3568,7 +4017,10 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
       {/* ── Nav ──────────────────────────────────────────────────────────── */}
       <header className="glass-shell floating-nav rise-in mx-auto flex max-w-[1600px] items-center gap-2 rounded-[3rem] px-3 py-1.5 sm:gap-3 sm:px-4">
         {/* Brand */}
-        <div className="flex shrink-0 items-center gap-2.5 pl-1">
+        <div
+          className="relative flex shrink-0 items-center gap-2.5 pl-1"
+          ref={siteMenuRef}
+        >
           <h1 className="text-sm font-semibold tracking-[-0.02em]">
             LLM Build-Off
           </h1>
@@ -3576,9 +4028,82 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
             aria-hidden="true"
             className="h-3.5 w-px bg-(--foreground) opacity-20"
           />
-          <span className="eyebrow-label hidden text-[11px] font-medium uppercase sm:block">
-            Eval Harness
-          </span>
+          <button
+            aria-expanded={isSiteMenuOpen}
+            aria-haspopup="menu"
+            className="site-menu-trigger eyebrow-label inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium uppercase"
+            onClick={() => setIsSiteMenuOpen((current) => !current)}
+            type="button"
+          >
+            <span>Eval Harness</span>
+            <span
+              aria-hidden="true"
+              className={cn(
+                "text-[10px] transition-transform duration-250",
+                isSiteMenuOpen && "rotate-180",
+              )}
+            >
+              ▾
+            </span>
+          </button>
+          {isSiteMenuOpen ? (
+            <div className="site-menu-panel" role="menu">
+              <div className="site-menu-panel__section">
+                <p className="site-menu-panel__eyebrow">Workspace</p>
+                <Link
+                  className={cn(
+                    "site-menu-panel__item",
+                    pathname === "/" && "site-menu-panel__item--active",
+                  )}
+                  href="/"
+                  onClick={() => setIsSiteMenuOpen(false)}
+                  role="menuitem"
+                >
+                  <span className="site-menu-panel__label">Build-Off</span>
+                  <span className="site-menu-panel__meta">New comparisons</span>
+                </Link>
+                <button
+                  className={cn(
+                    "site-menu-panel__item text-left",
+                    isHistoryOpen && "site-menu-panel__item--active",
+                  )}
+                  onClick={() => {
+                    setIsSiteMenuOpen(false);
+                    setIsHistoryOpen((current) => {
+                      const next = !current;
+                      if (next) void loadRuns();
+                      return next;
+                    });
+                  }}
+                  role="menuitem"
+                  type="button"
+                >
+                  <span className="site-menu-panel__label">Run history</span>
+                  <span className="site-menu-panel__meta">
+                    {runs.length ? `${runs.length} saved runs` : "Recent sessions"}
+                  </span>
+                </button>
+              </div>
+
+              <div className="site-menu-panel__divider" />
+
+              <div className="site-menu-panel__section">
+                <p className="site-menu-panel__eyebrow">Insights</p>
+                <Link
+                  className={cn(
+                    "site-menu-panel__item",
+                    pathname === "/stats" && "site-menu-panel__item--active",
+                  )}
+                  href="/stats"
+                  onClick={() => setIsSiteMenuOpen(false)}
+                  role="menuitem"
+                >
+                  <span className="site-menu-panel__label">Stats</span>
+                  <span className="site-menu-panel__meta">Aggregate model results</span>
+                </Link>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Submenu */}
@@ -3657,7 +4182,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
             className="mx-1 hidden h-4 w-px shrink-0 bg-(--foreground) opacity-15 sm:block"
           />
 
-          {/* Preview / Raw toggle */}
+          {/* Output toggle */}
           <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
             <button
               className={cn(
@@ -3684,6 +4209,18 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
               type="button"
             >
               Raw
+            </button>
+            <button
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition",
+                outputMode === "thinking"
+                  ? "bg-(--foreground) text-(--background)"
+                  : "text-(--muted) hover:bg-(--card-active)",
+              )}
+              onClick={() => setOutputMode("thinking")}
+              type="button"
+            >
+              Thinking
             </button>
           </div>
 
@@ -3762,6 +4299,11 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
             {modelsError}
           </div>
         ) : null}
+        {isHydratingRouteRun ? (
+          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--foreground)_12%,transparent)] bg-[color-mix(in_oklch,var(--foreground)_5%,transparent)] px-4 py-3 text-sm text-(--muted)">
+            Loading run {initialRunId}…
+          </div>
+        ) : null}
       </div>
 
       {agenticOptions.enabled ? (
@@ -3782,14 +4324,14 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                   <span>Max turns</span>
                   <input
                     className="rounded-[1rem] border border-(--line) bg-(--card) px-3 py-2 text-sm font-medium tracking-normal text-(--foreground) outline-none transition focus:border-(--accent)"
-                    max={8}
+                    max={12}
                     min={1}
                     onChange={(event) =>
                       setAgenticOptions((current) => ({
                         ...current,
                         maxTurns: Math.max(
                           1,
-                          Math.min(8, Number(event.target.value) || 1),
+                          Math.min(12, Number(event.target.value) || 1),
                         ),
                       }))
                     }
@@ -3837,7 +4379,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
           {runs.length ? (
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {runs.map((run, index) => (
-                <button
+                <Link
                   key={run.id}
                   className={cn(
                     "w-full rounded-[1.3rem] border px-4 py-3 text-left transition hover:bg-(--card-active)",
@@ -3845,11 +4387,8 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                       ? "border-(--foreground) bg-(--card-active)"
                       : "border-(--line)",
                   )}
-                  onClick={() => {
-                    hydrateRun(run);
-                    setIsHistoryOpen(false);
-                  }}
-                  type="button"
+                  href={getRunHref(run.id)}
+                  onClick={() => hydrateRun(run)}
                 >
                   <div className="mb-1.5 flex items-center justify-between gap-3">
                     <span className="text-xs font-semibold text-(--muted)">
@@ -3860,7 +4399,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                     </span>
                   </div>
                   <p className="line-clamp-2 text-xs leading-5">{run.prompt}</p>
-                </button>
+                </Link>
               ))}
             </div>
           ) : (
@@ -3868,6 +4407,50 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
               {isLoadingRuns ? "Loading…" : "No saved runs yet."}
             </div>
           )}
+        </div>
+      ) : null}
+
+      {aggregateActiveCount ? (
+        <div className="status-strip-dock">
+          <section className="status-strip glass-shell rise-in mx-auto max-w-[1600px]">
+            <div className="status-strip__intro">
+              <p className="status-strip__eyebrow">Run totals</p>
+              <p className="status-strip__headline">
+                {aggregateStatus.streamingCount
+                  ? `${aggregateStatus.streamingCount} streaming`
+                  : aggregateStatus.completedCount
+                    ? `${aggregateStatus.completedCount} complete`
+                    : `${aggregateStatus.errorCount} ended with errors`}
+              </p>
+            </div>
+
+            <div className="status-strip__stats">
+              <div className="status-strip__stat">
+                <span className="status-strip__label">Cards</span>
+                <strong className="status-strip__value">
+                  {aggregateActiveCount}/{selectedModels.length}
+                </strong>
+              </div>
+              <div className="status-strip__stat">
+                <span className="status-strip__label">Total tokens</span>
+                <strong className="status-strip__value">
+                  {formatLiveTokenCount(
+                    aggregateStatus.totalTokens,
+                    aggregateStatus.hasEstimatedTokens,
+                  )}
+                </strong>
+              </div>
+              <div className="status-strip__stat">
+                <span className="status-strip__label">Total cost</span>
+                <strong className="status-strip__value">
+                  {aggregateStatus.hasEstimatedCost &&
+                  aggregateStatus.totalCost != null
+                    ? `~${formatCost(aggregateStatus.totalCost)}`
+                    : formatCost(aggregateStatus.totalCost)}
+                </strong>
+              </div>
+            </div>
+          </section>
         </div>
       ) : null}
 
@@ -3953,7 +4536,11 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
           const cardAgenticState = agenticActivity[model.id];
           const cardPreviewErrors = previewErrors[previewId] ?? [];
           const cardPreviewToolErrors = previewToolErrors[previewId] ?? [];
-          const effectivePreviewMarkup = previewOverrides[model.id] ?? result?.text ?? "";
+          const repairedMarkup = result?.repairedText ?? result?.text ?? "";
+          const effectivePreviewMarkup = previewOverrides[model.id] ?? repairedMarkup;
+          const displayRawMarkup = repairedMarkup;
+          const thinkingOutput = result?.thinking?.trim() ?? "";
+          const domCssStatItems = buildDomCssStatItems(result?.domCssStats);
           const hasHtml = looksLikeHtml(
             unwrapHtmlCodeFence(effectivePreviewMarkup),
           );
@@ -4106,7 +4693,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                   </div>
                 ) : null}
 
-                {result?.text || previewOverrides[model.id] ? (
+                {displayRawMarkup || previewOverrides[model.id] || thinkingOutput ? (
                   outputMode === "preview" ? (
                     <div className="flex flex-col gap-2 p-3">
                       {!hasHtml ? (
@@ -4131,7 +4718,9 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                       ) : (
                         <div
                           className="preview-card-shell"
-                          style={{ viewTransitionName: previewVtName(model.id) }}
+                          ref={(element) => {
+                            previewCardShellRefs.current[model.id] = element;
+                          }}
                         >
                           <OutputViewport
                             className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-white"
@@ -4143,9 +4732,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                               aria-label={`Open ${result.label} preview`}
                               className="preview-card-trigger"
                               onClick={() => {
-                                withTransition(() =>
-                                  setActivePreviewModelId(model.id),
-                                );
+                                openPreview(model.id);
                               }}
                               type="button"
                             >
@@ -4159,20 +4746,20 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                                   previewFrameRefs.current[previewId] = element;
                                 }}
                                 isStreaming={result.status === "streaming"}
-                                markup={result.text}
+                                markup={displayRawMarkup}
                                 overrideMarkup={previewOverrides[model.id]}
                                 previewId={previewId}
                                 title={`${result.label} preview`}
                               />
                               {cardPreviewToolErrors.length ? (
                                 <div className="absolute inset-4 z-20 flex items-start justify-center">
-                                  <div className="w-full max-w-xl rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,white_72%,var(--danger)_10%)] p-3 text-sm text-(--foreground) shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_18%,transparent)] backdrop-blur-md">
+                                  <div className="w-full max-w-xl rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_46%,var(--line))] bg-[linear-gradient(180deg,color-mix(in_oklch,var(--panel-strong)_84%,var(--danger)_16%),color-mix(in_oklch,var(--panel)_88%,black_8%))] p-3 text-sm text-[color-mix(in_oklch,var(--foreground)_96%,white)] shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_24%,transparent)] backdrop-blur-xl">
                                     <div className="flex items-start justify-between gap-3">
                                       <div>
-                                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--danger)">
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color-mix(in_oklch,var(--danger)_72%,white)]">
                                           Tool call failed
                                         </p>
-                                        <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_88%,black)]">
+                                        <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_96%,white)]">
                                           {cardPreviewToolErrors.map((msg, i) => (
                                             <p key={`${previewId}-tool-err-${i}`}>
                                               {msg}
@@ -4181,7 +4768,7 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                                         </div>
                                       </div>
                                       <button
-                                        className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_30%,transparent)] bg-white/70 px-3 py-1 text-xs font-medium text-(--danger) transition hover:bg-white"
+                                        className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,var(--panel-strong)_82%,var(--danger)_18%)] px-3 py-1 text-xs font-semibold text-[color-mix(in_oklch,var(--foreground)_94%,white)] transition hover:bg-[color-mix(in_oklch,var(--panel-strong)_72%,var(--danger)_28%)]"
                                         onClick={() =>
                                           dismissPreviewToolErrors(previewId)
                                         }
@@ -4199,18 +4786,54 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                       )}
                     </div>
                   ) : (
-                    <div className="p-3">
-                      <OutputViewport
-                        className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
-                        contentClassName="overflow-auto px-4 py-4"
-                        contentStyle={cardViewportStyle}
-                        title={`${result.label} raw`}
-                      >
-                        <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7">
-                          {result.text}
-                        </pre>
-                      </OutputViewport>
-                    </div>
+                    outputMode === "raw" ? (
+                      <div className="flex flex-col gap-2 p-3">
+                        <div className="flex items-center justify-between rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-(--muted)">
+                          <span>DOM + CSS stats</span>
+                          <span>
+                            {result?.stats?.repairPassCount ? "Includes repaired output" : "Initial output"}
+                          </span>
+                        </div>
+                        {domCssStatItems.length ? (
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {domCssStatItems.map(([label, value]) => (
+                              <div
+                                key={`${model.id}-${label}`}
+                                className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2"
+                              >
+                                <p className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">{label}</p>
+                                <p className="mt-1 text-sm font-semibold text-(--foreground)">{value}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        <OutputViewport
+                          className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
+                          contentClassName="overflow-auto px-4 py-4"
+                          contentStyle={cardViewportStyle}
+                          title={`${result.label} raw`}
+                        >
+                          <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7">
+                            {displayRawMarkup}
+                          </pre>
+                        </OutputViewport>
+                      </div>
+                    ) : (
+                      <div className="p-3">
+                        <OutputViewport
+                          className="overflow-hidden rounded-[1.2rem] border border-(--line) bg-(--card)"
+                          contentClassName="overflow-auto px-4 py-4"
+                          contentStyle={cardViewportStyle}
+                          title={`${result.label} thinking`}
+                        >
+                          <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7 text-(--muted)">
+                            {thinkingOutput || (agenticOptions.enabled
+                              ? "No thinking trace available yet."
+                              : "Thinking traces appear when the model emits reasoning output.")}
+                          </pre>
+                        </OutputViewport>
+                      </div>
+                    )
                   )
                 ) : (
                   <div
@@ -4326,6 +4949,14 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
                       </strong>
                     </span>
                   ) : null}
+                  {result.stats?.repairPassCount != null ? (
+                    <span>
+                      Repair passes{" "}
+                      <strong className="font-semibold text-(--foreground)">
+                        {formatTokenCount(result.stats.repairPassCount)}
+                      </strong>
+                    </span>
+                  ) : null}
                   {tokenMetrics?.peakTokensPerSecond != null ? (
                     <span>
                       Tps{" "}
@@ -4393,86 +5024,93 @@ export function BuildOffClient({ authConfig }: BuildOffClientProps) {
         ) : null}
       </div>
 
-      {activePreviewResult && activePreviewModel && activePreviewId ? (
-        <div
-          className="preview-modal-backdrop"
-          onClick={() => withTransition(() => setActivePreviewModelId(null))}
-        >
-          <div
-            className="preview-modal-sheet"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="preview-modal__header">
-              <div>
-                <p className="preview-modal__eyebrow">Interactive preview</p>
-                <h2 className="preview-modal__title">
-                  {activePreviewResult.label}
-                </h2>
-              </div>
-              <button
-                className="preview-modal__close"
-                onClick={() => withTransition(() => setActivePreviewModelId(null))}
-                type="button"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="preview-modal__body">
-              {activePreviewErrors.length ? (
-                <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
-                  {activePreviewErrors.map((msg, i) => (
-                    <p key={`${activePreviewId}-modal-err-${i}`}>{msg}</p>
-                  ))}
-                </div>
-              ) : null}
-
+      {isClient && activePreviewResult && activePreviewModel && activePreviewId
+        ? createPortal(
+            <div
+              aria-modal="true"
+              className="preview-modal-backdrop"
+              onClick={closePreview}
+              role="dialog"
+            >
               <div
-                className="preview-modal__viewport"
-                style={{ viewTransitionName: previewVtName(activePreviewModel.id) }}
+                className="preview-modal-sheet"
+                onClick={(event) => event.stopPropagation()}
               >
-                <LiveHtmlPreview
-                  iframeRef={(element) => {
-                    previewFrameRefs.current[activePreviewId] = element;
-                  }}
-                  interactive
-                  isStreaming={activePreviewResult.status === "streaming"}
-                  markup={activePreviewResult.text}
-                  overrideMarkup={previewOverrides[activePreviewModel.id]}
-                  previewId={activePreviewId}
-                  title={`${activePreviewResult.label} interactive preview`}
-                />
-              </div>
+                <div className="preview-modal__header">
+                  <div>
+                    <p className="preview-modal__eyebrow">Interactive preview</p>
+                    <h2 className="preview-modal__title">
+                      {activePreviewResult.label}
+                    </h2>
+                  </div>
+                  <button
+                    className="preview-modal__close"
+                    onClick={closePreview}
+                    type="button"
+                  >
+                    Close
+                  </button>
+                </div>
 
-              {activePreviewToolErrors.length ? (
-                <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,white_72%,var(--danger)_10%)] p-3 text-sm text-(--foreground) shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_18%,transparent)] backdrop-blur-md">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--danger)">
-                        Tool call failed
-                      </p>
-                      <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_88%,black)]">
-                        {activePreviewToolErrors.map((msg, i) => (
-                          <p key={`${activePreviewId}-modal-tool-err-${i}`}>
-                            {msg}
+                <div className="preview-modal__body">
+                  {activePreviewErrors.length ? (
+                    <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
+                      {activePreviewErrors.map((msg, i) => (
+                        <p key={`${activePreviewId}-modal-err-${i}`}>{msg}</p>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div
+                    className="preview-modal__viewport"
+                    ref={activePreviewViewportRef}
+                  >
+                    <LiveHtmlPreview
+                      iframeRef={(element) => {
+                        previewFrameRefs.current[activePreviewId] = element;
+                      }}
+                      interactive
+                      isStreaming={activePreviewResult.status === "streaming"}
+                      markup={
+                        activePreviewResult.repairedText ?? activePreviewResult.text
+                      }
+                      overrideMarkup={previewOverrides[activePreviewModel.id]}
+                      previewId={activePreviewId}
+                      title={`${activePreviewResult.label} interactive preview`}
+                    />
+                  </div>
+
+                  {activePreviewToolErrors.length ? (
+                    <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_46%,var(--line))] bg-[linear-gradient(180deg,color-mix(in_oklch,var(--panel-strong)_84%,var(--danger)_16%),color-mix(in_oklch,var(--panel)_88%,black_8%))] p-3 text-sm text-[color-mix(in_oklch,var(--foreground)_96%,white)] shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_24%,transparent)] backdrop-blur-xl">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color-mix(in_oklch,var(--danger)_72%,white)]">
+                            Tool call failed
                           </p>
-                        ))}
+                          <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_96%,white)]">
+                            {activePreviewToolErrors.map((msg, i) => (
+                              <p key={`${activePreviewId}-modal-tool-err-${i}`}>
+                                {msg}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                        <button
+                          className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,var(--panel-strong)_82%,var(--danger)_18%)] px-3 py-1 text-xs font-semibold text-[color-mix(in_oklch,var(--foreground)_94%,white)] transition hover:bg-[color-mix(in_oklch,var(--panel-strong)_72%,var(--danger)_28%)]"
+                          onClick={() => dismissPreviewToolErrors(activePreviewId)}
+                          type="button"
+                        >
+                          Dismiss
+                        </button>
                       </div>
                     </div>
-                    <button
-                      className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_30%,transparent)] bg-white/70 px-3 py-1 text-xs font-medium text-(--danger) transition hover:bg-white"
-                      onClick={() => dismissPreviewToolErrors(activePreviewId)}
-                      type="button"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {/* ── Prompt modal ─────────────────────────────────────────────────── */}
       {isPromptModalOpen ? (

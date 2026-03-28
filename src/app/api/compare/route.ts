@@ -21,6 +21,7 @@ import {
   resolveModelBaseUrl,
   supportsAgenticModel,
 } from "@/lib/models";
+import { computeOutputDomCssStats } from "@/lib/output-stats";
 import { isStorageConfigured, uploadImage, uploadText } from "@/lib/storage";
 import type {
   AgenticOptions,
@@ -55,7 +56,7 @@ const openrouter = createOpenAICompatible({
 
 const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
   enabled: false,
-  maxTurns: 4,
+  maxTurns: 6,
   todoListTool: false,
 };
 
@@ -193,6 +194,7 @@ type MutableToolMetric = {
 
 type ExecutionTracker = {
   passCount: number;
+  repairPassCount: number;
   stepCount: number;
   toolCallCount: number;
   toolErrorCount: number;
@@ -204,6 +206,7 @@ type ExecutionTracker = {
 function createExecutionTracker(): ExecutionTracker {
   return {
     passCount: 0,
+    repairPassCount: 0,
     stepCount: 0,
     toolCallCount: 0,
     toolErrorCount: 0,
@@ -280,6 +283,7 @@ function snapshotExecutionStats(
 
   return {
     passCount: tracker.passCount || undefined,
+    repairPassCount: tracker.repairPassCount || undefined,
     stepCount: tracker.stepCount || undefined,
     toolCallCount: tracker.toolCallCount || undefined,
     toolErrorCount: tracker.toolErrorCount || undefined,
@@ -480,6 +484,17 @@ async function streamPass({
         });
         break;
       }
+      case "reasoning-delta": {
+        if (typeof part.text === "string" && part.text) {
+          sendEvent(controller, {
+            type: "thinking-delta",
+            modelId: model.id,
+            delta: part.text,
+            stats: snapshotExecutionStats(tracker),
+          });
+        }
+        break;
+      }
       case "tool-call": {
         tracker.toolCallCount += 1;
         const metric = getMutableToolMetric(tracker, part.toolName);
@@ -623,7 +638,14 @@ async function streamModelResult(
     finishReason = initialPass.finishReason;
     responseId = initialPass.responseId;
 
-    if (agentic.enabled && fullText.trim() && agentic.maxTurns > 1) {
+    if (agentic.enabled && fullText.trim()) {
+      tracker.repairPassCount += 1;
+      sendEvent(controller, {
+        type: "repair-start",
+        modelId: model.id,
+        stats: snapshotExecutionStats(tracker),
+      });
+
       const revisionPass = await streamPass({
         controller,
         model,
@@ -634,7 +656,7 @@ async function streamModelResult(
         gatewayModel,
         replaceOnTextStart: true,
         agentic: {
-          maxTurns: Math.max(1, agentic.maxTurns - 1),
+          maxTurns: agentic.maxTurns,
           todoListTool: agentic.todoListTool,
         },
         messages: [
@@ -652,12 +674,18 @@ async function streamModelResult(
           {
             role: "user",
             content:
-              "Inspect the current rendered draft with the available tools before finalizing. Return only a full replacement HTML document, never a diff.",
+              "This is the agentic repair pass. Inspect the current rendered draft with the available tools, repair issues you find, and return only a full replacement HTML document, never a diff.",
           },
         ],
       });
 
       if (revisionPass.text.trim()) {
+        sendEvent(controller, {
+          type: "repair-complete",
+          modelId: model.id,
+          repairedText: revisionPass.text,
+          stats: snapshotExecutionStats(tracker),
+        });
         fullText = revisionPass.text;
       }
 
@@ -676,6 +704,7 @@ async function streamModelResult(
       usage,
       runtimeMs,
     });
+    const domCssStats = computeOutputDomCssStats(fullText);
 
     sendEvent(controller, {
       type: "done",
@@ -691,6 +720,7 @@ async function streamModelResult(
       usage,
       costs,
       stats,
+      domCssStats,
     });
 
     return {
@@ -710,6 +740,7 @@ async function streamModelResult(
       usage,
       costs,
       stats,
+      domCssStats,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected model error.";
@@ -721,6 +752,7 @@ async function streamModelResult(
       usage,
       runtimeMs,
     });
+    const domCssStats = computeOutputDomCssStats(fullText);
 
     sendEvent(controller, {
       type: "error",
@@ -735,6 +767,7 @@ async function streamModelResult(
       usage,
       costs,
       stats,
+      domCssStats,
     });
 
     return {
@@ -753,6 +786,7 @@ async function streamModelResult(
       usage,
       costs,
       stats,
+      domCssStats,
     };
   }
 }
@@ -850,7 +884,7 @@ export async function POST(request: Request) {
     ...body.agentic,
     maxTurns: Math.max(
       1,
-      Math.min(8, Math.round(body.agentic?.maxTurns ?? DEFAULT_AGENTIC_OPTIONS.maxTurns)),
+      Math.min(12, Math.round(body.agentic?.maxTurns ?? DEFAULT_AGENTIC_OPTIONS.maxTurns)),
     ),
   };
   const catalogModels = await fetchAvailableModels().catch(() => []);
