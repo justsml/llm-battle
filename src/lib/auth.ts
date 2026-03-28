@@ -3,8 +3,14 @@ import { randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { nextCookies } from "better-auth/next-js";
+import { anonymous } from "better-auth/plugins/anonymous";
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool } from "pg";
+
+import {
+  AUTH_SESSION_TTL_SECONDS,
+  isDevAuthFallbackEnabled,
+} from "@/lib/auth-config";
 
 const DEV_FALLBACK_AUTH_SECRET = "development-only-better-auth-secret-change-me";
 
@@ -64,6 +70,18 @@ const socialProviders =
       }
     : {};
 
+const plugins = [
+  nextCookies(),
+  ...(isDevAuthFallbackEnabled()
+    ? [
+        anonymous({
+          emailDomainName: "localhost.dev",
+          generateName: () => "Local Dev Guest",
+        }),
+      ]
+    : []),
+];
+
 export const auth = betterAuth({
   appName: "LLM Build-Off",
   baseURL: process.env.BETTER_AUTH_URL,
@@ -74,8 +92,15 @@ export const auth = betterAuth({
     db: getAuthDb(),
     type: "postgres",
   },
+  session: {
+    expiresIn: AUTH_SESSION_TTL_SECONDS,
+    cookieCache: {
+      enabled: true,
+      maxAge: AUTH_SESSION_TTL_SECONDS,
+    },
+  },
   socialProviders,
-  plugins: [nextCookies()],
+  plugins,
   advanced: {
     database: {
       generateId: () => randomUUID(),

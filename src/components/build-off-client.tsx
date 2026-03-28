@@ -83,6 +83,13 @@ type ModelCardWorkspaceState = {
   previewOverrides: Record<string, string>;
 };
 
+type BuildOffClientProps = {
+  authConfig: {
+    githubConfigured: boolean;
+    allowLocalDevAutoAuth: boolean;
+  };
+};
+
 const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
   enabled: false,
   maxTurns: 8,
@@ -992,13 +999,16 @@ function summarizePrompt(value: string) {
 function getUserDisplayName(user: {
   name?: string | null;
   email?: string | null;
+  isAnonymous?: boolean | null;
 }) {
+  if (user.isAnonymous) return "Local Dev Guest";
   return user.name?.trim() || user.email?.trim() || "Signed in user";
 }
 
 function getUserMonogram(user: {
   name?: string | null;
   email?: string | null;
+  isAnonymous?: boolean | null;
 }) {
   return getUserDisplayName(user).trim().charAt(0).toUpperCase() || "U";
 }
@@ -1386,7 +1396,7 @@ function OutputViewport({
   );
 }
 
-export function BuildOffClient() {
+export function BuildOffClient({ authConfig }: BuildOffClientProps) {
   const { data: sessionData, isPending: isSessionPending } =
     authClient.useSession();
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -1469,12 +1479,14 @@ export function BuildOffClient() {
   >({});
   const lastSavedDraftRef = useRef<string | null>(null);
   const restoredDraftRef = useRef(false);
+  const attemptedLocalDevSignInRef = useRef(false);
   const pendingDraftModelConfigsByModeRef = useRef<
     Partial<Record<ModelCardModeKey, string[]>> | null
   >(null);
   const pendingDraftModeKeyRef = useRef<ModelCardModeKey>("standard");
   const signedInUser = sessionData?.user ?? null;
   const signedInUserId = signedInUser?.id ?? null;
+  const isAnonymousUser = Boolean(signedInUser?.isAnonymous);
   const currentModelCardModeKey = getModelCardModeKey(agenticOptions.enabled);
   const maxSelectableCards = getMaxSelectableModelCards(
     catalog,
@@ -1641,6 +1653,10 @@ export function BuildOffClient() {
     },
   );
 
+  const bootstrapLocalDevSession = useEffectEvent(() => {
+    void handleAnonymousSignIn();
+  });
+
   useEffect(() => {
     try {
       const rawDraft = window.localStorage.getItem(LOCAL_DRAFT_KEY);
@@ -1743,6 +1759,15 @@ export function BuildOffClient() {
 
     loadRunsForCurrentSession({ hydrateLatest: true });
   }, [isSessionPending, signedInUserId]);
+
+  useEffect(() => {
+    if (!authConfig.allowLocalDevAutoAuth) return;
+    if (attemptedLocalDevSignInRef.current) return;
+    if (isSessionPending || signedInUser) return;
+
+    attemptedLocalDevSignInRef.current = true;
+    bootstrapLocalDevSession();
+  }, [authConfig.allowLocalDevAutoAuth, isSessionPending, signedInUser]);
 
   useEffect(() => {
     void (async () => {
@@ -2848,9 +2873,27 @@ export function BuildOffClient() {
     }
   }
 
+  async function handleAnonymousSignIn() {
+    setAuthError("");
+    setIsAuthActionPending(true);
+
+    try {
+      await authClient.signIn.anonymous();
+    } catch (error) {
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : "Unable to create a local development session.",
+      );
+    } finally {
+      setIsAuthActionPending(false);
+    }
+  }
+
   async function handleSignOut() {
     setAuthError("");
     setIsAuthActionPending(true);
+    attemptedLocalDevSignInRef.current = false;
 
     try {
       await authClient.signOut();
@@ -2977,7 +3020,7 @@ export function BuildOffClient() {
 
   async function handleCompare() {
     if (!signedInUser) {
-      setErrorMessage("Sign in with GitHub to run a build-off.");
+      setErrorMessage("Sign in to run a build-off.");
       return;
     }
 
@@ -3354,6 +3397,8 @@ export function BuildOffClient() {
   }
 
   if (!signedInUser) {
+    const missingGitHubConfig = !authConfig.githubConfigured;
+
     return (
       <main className="relative min-h-screen [overflow-x:clip] px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
@@ -3364,12 +3409,14 @@ export function BuildOffClient() {
               Visual Eval Harness
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
-              Sign in to save and compare build-off runs
+              {authConfig.allowLocalDevAutoAuth
+                ? "Preparing your localhost dev session"
+                : "Sign in to save and compare build-off runs"}
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-(--muted) sm:text-base">
-              GitHub OAuth is now wired through Better Auth. Once you sign in,
-              run history stays tied to your account instead of mixing together
-              across the whole app.
+              {authConfig.allowLocalDevAutoAuth
+                ? "GitHub OAuth is not configured for this development environment, so Better Auth will create a temporary local account for this browser and keep it signed in for up to two weeks."
+                : "GitHub OAuth is now wired through Better Auth. Once you sign in, run history stays tied to your account instead of mixing together across the whole app."}
             </p>
           </header>
 
@@ -3380,27 +3427,48 @@ export function BuildOffClient() {
                   Authentication
                 </p>
                 <h2 className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
-                  Continue with GitHub
+                  {authConfig.allowLocalDevAutoAuth
+                    ? "Create a local dev account"
+                    : missingGitHubConfig
+                      ? "GitHub auth needs setup"
+                      : "Continue with GitHub"}
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-(--muted)">
-                  Your local draft still stays in the browser, but
-                  database-backed runs and new comparisons are only available
-                  after sign-in.
+                  {authConfig.allowLocalDevAutoAuth
+                    ? "Your local draft still stays in the browser, and database-backed runs will attach to this temporary localhost account automatically."
+                    : missingGitHubConfig
+                      ? "GitHub OAuth env vars are missing. Open the app on localhost in development for automatic guest access, or add the GitHub Better Auth config."
+                      : "Your local draft still stays in the browser, but database-backed runs and new comparisons are only available after sign-in."}
                 </p>
               </div>
 
-              <button
-                className="rounded-full bg-(--foreground) px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
-                disabled={isAuthActionPending}
-                onClick={() => {
-                  void handleGitHubSignIn();
-                }}
-                type="button"
-              >
-                {isAuthActionPending
-                  ? "Redirecting..."
-                  : "Continue with GitHub"}
-              </button>
+              {authConfig.allowLocalDevAutoAuth ? (
+                <button
+                  className="rounded-full bg-(--foreground) px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
+                  disabled={isAuthActionPending}
+                  onClick={() => {
+                    void handleAnonymousSignIn();
+                  }}
+                  type="button"
+                >
+                  {isAuthActionPending
+                    ? "Creating local session..."
+                    : "Retry local sign-in"}
+                </button>
+              ) : missingGitHubConfig ? null : (
+                <button
+                  className="rounded-full bg-(--foreground) px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
+                  disabled={isAuthActionPending}
+                  onClick={() => {
+                    void handleGitHubSignIn();
+                  }}
+                  type="button"
+                >
+                  {isAuthActionPending
+                    ? "Redirecting..."
+                    : "Continue with GitHub"}
+                </button>
+              )}
             </div>
 
             {authError ? (
@@ -3590,7 +3658,11 @@ export function BuildOffClient() {
             }}
             type="button"
           >
-            {isAuthActionPending ? "Signing out…" : "Sign out"}
+            {isAuthActionPending
+              ? "Signing out…"
+              : isAnonymousUser
+                ? "Reset guest"
+                : "Sign out"}
           </button>
         </div>
       </header>
