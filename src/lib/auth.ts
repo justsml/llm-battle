@@ -83,7 +83,7 @@ const plugins = [
 ];
 
 export const auth = betterAuth({
-  appName: "LLM Build-Off",
+  appName: "LLM Battle",
   baseURL: process.env.BETTER_AUTH_URL,
   secret:
     process.env.BETTER_AUTH_SECRET ??

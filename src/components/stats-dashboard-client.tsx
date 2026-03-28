@@ -396,7 +396,7 @@ export function StatsDashboardClient() {
             className="rounded-full px-4 py-2 text-sm font-medium text-(--muted) transition hover:bg-(--card-active) hover:text-(--foreground)"
             href="/"
           >
-            Build-Off
+            Battle
           </Link>
           <span className="rounded-full bg-(--accent) px-4 py-2 text-sm font-semibold text-white">
             Stats

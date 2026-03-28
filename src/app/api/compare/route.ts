@@ -50,7 +50,7 @@ const openrouter = createOpenAICompatible({
   baseURL: "https://openrouter.ai/api/v1",
   headers: {
     "HTTP-Referer": "https://github.com/justsml/llm-battle",
-    "X-Title": "LLM Build-Off",
+    "X-Title": "LLM Battle",
   },
 });
 

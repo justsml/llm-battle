@@ -14,7 +14,7 @@ const serif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "LLM Build-Off",
+  title: "LLM Battle",
   description: "Compare multiple model outputs against the same reference screenshot.",
 };
 

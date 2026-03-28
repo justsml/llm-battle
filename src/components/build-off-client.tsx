@@ -1880,6 +1880,32 @@ export function BuildOffClient({
     router.push(target, { scroll: false });
   }, [pathname, router]);
 
+  const hydrateRun = useCallback((
+    run: SavedRun,
+    options?: {
+      syncRoute?: boolean;
+      replaceRoute?: boolean;
+    },
+  ) => {
+    setActiveRunId(run.id);
+    setPrompt(run.prompt);
+    setImageDataUrl(getRunImageSrc(run));
+    setImageName(run.imageName);
+    setSelectedModels(run.models);
+    setResults(run.results);
+    resetAllLiveStreamMetrics();
+    setAgenticActivity({});
+    setPreviewErrors({});
+    setPreviewToolErrors({});
+    setPreviewOverrides({});
+    setErrorMessage("");
+    setIsHistoryOpen(false);
+
+    if (options?.syncRoute !== false) {
+      syncRouteToRun(run.id, options?.replaceRoute);
+    }
+  }, [syncRouteToRun]);
+
   const hydrateRouteRun = useCallback(async (runId: string) => {
     if (!signedInUser) return;
 
@@ -3155,32 +3181,6 @@ export function BuildOffClient({
     setErrorMessage("");
   }
 
-  const hydrateRun = useCallback((
-    run: SavedRun,
-    options?: {
-      syncRoute?: boolean;
-      replaceRoute?: boolean;
-    },
-  ) => {
-    setActiveRunId(run.id);
-    setPrompt(run.prompt);
-    setImageDataUrl(getRunImageSrc(run));
-    setImageName(run.imageName);
-    setSelectedModels(run.models);
-    setResults(run.results);
-    resetAllLiveStreamMetrics();
-    setAgenticActivity({});
-    setPreviewErrors({});
-    setPreviewToolErrors({});
-    setPreviewOverrides({});
-    setErrorMessage("");
-    setIsHistoryOpen(false);
-
-    if (options?.syncRoute !== false) {
-      syncRouteToRun(run.id, options?.replaceRoute);
-    }
-  }, [syncRouteToRun]);
-
   function handleModelChange(index: number, nextModelConfig: string) {
     const currentModelConfig = getModelConfig(selectedModels[index]);
     const selectedConfigsExcludingCurrent = selectedModels
@@ -4022,7 +4022,7 @@ export function BuildOffClient({
           ref={siteMenuRef}
         >
           <h1 className="text-sm font-semibold tracking-[-0.02em]">
-            LLM Build-Off
+            LLM Battle
           </h1>
           <span
             aria-hidden="true"
@@ -4059,7 +4059,7 @@ export function BuildOffClient({
                   onClick={() => setIsSiteMenuOpen(false)}
                   role="menuitem"
                 >
-                  <span className="site-menu-panel__label">Build-Off</span>
+                  <span className="site-menu-panel__label">Battle</span>
                   <span className="site-menu-panel__meta">New comparisons</span>
                 </Link>
                 <button
