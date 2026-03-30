@@ -15,10 +15,11 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 
 import { BattleAuthGate } from "@/components/battle/components/battle-auth-gate";
 import { BattleLoadingState } from "@/components/battle/components/battle-loading-state";
+import { BattlePreviewModal } from "@/components/battle/components/battle-preview-modal";
+import { BattlePromptModal } from "@/components/battle/components/battle-prompt-modal";
 import { HostModelExplorerModal } from "@/components/battle/components/host-model-explorer-modal";
 import { OutputViewport } from "@/components/battle/components/output-viewport";
 import { RevisionNavigator } from "@/components/battle/components/revision-navigator";
@@ -6346,165 +6347,47 @@ export function BattleClient({
         />
       ) : null}
 
-      {isClient && activePreviewResult && activePreviewModel && activePreviewId
-        ? createPortal(
-            <div
-              aria-modal="true"
-              className="preview-modal-backdrop"
-              onClick={closePreview}
-              role="dialog"
-            >
-              <div
-                className="preview-modal-sheet h-full"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="preview-modal__header">
-                  <div>
-                    <p className="preview-modal__eyebrow">Interactive preview</p>
-                    <h2 className="preview-modal__title">
-                      {activePreviewResult.label}
-                    </h2>
-                  </div>
-                  <button
-                    className="preview-modal__close"
-                    onClick={closePreview}
-                    type="button"
-                  >
-                    Close
-                  </button>
-                </div>
+      <BattlePreviewModal
+        activePreviewErrors={activePreviewErrors}
+        activePreviewId={activePreviewId ?? ""}
+        activePreviewResult={activePreviewResult ?? results[0]}
+        activePreviewToolErrors={activePreviewToolErrors}
+        activePreviewVisualDiff={activePreviewVisualDiff}
+        closePreview={closePreview}
+        imageDataUrl={imageDataUrl}
+        interactiveMarkup={activePreviewRevisionState.selectedRevision?.html ?? ""}
+        isOpen={Boolean(
+          isClient && activePreviewResult && activePreviewModel && activePreviewId,
+        )}
+        isStreaming={activePreviewResult?.status === "streaming"}
+        onDismissToolErrors={dismissPreviewToolErrors}
+        onIframeRef={(element) => {
+          if (!activePreviewId) return;
+          previewFrameRefs.current[activePreviewId] = element;
+        }}
+        onRefreshVisualDiff={() => {
+          if (!activePreviewId) return;
+          void refreshVisualDiff(activePreviewId);
+        }}
+        onSelectRevision={(revisionId) => {
+          if (!activePreviewModel) return;
+          setSelectedRevisionIds((current) => ({
+            ...current,
+            [activePreviewModel.id]: revisionId,
+          }));
+        }}
+        previewViewportRef={activePreviewViewportRef}
+        revisions={activePreviewRevisionState.revisions}
+        selectedRevisionIndex={activePreviewRevisionState.selectedIndex}
+        traceEvents={readTraceEvents(activePreviewResult?.stats).slice().reverse()}
+      />
 
-                <div className="preview-modal__body flex-1">
-                  <div className="grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(22rem,0.9fr)]">
-                    <div className="flex min-h-0 flex-col gap-3">
-                  <RevisionNavigator
-                    onSelect={(revisionId) => {
-                      if (!activePreviewModel) return;
-                      setSelectedRevisionIds((current) => ({
-                        ...current,
-                        [activePreviewModel.id]: revisionId,
-                      }));
-                    }}
-                    revisions={activePreviewRevisionState.revisions}
-                    selectedIndex={activePreviewRevisionState.selectedIndex}
-                  />
-                  {activePreviewErrors.length ? (
-                    <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
-                      {activePreviewErrors.map((msg, i) => (
-                        <p key={`${activePreviewId}-modal-err-${i}`}>{msg}</p>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  <div
-                    className="preview-modal__viewport"
-                    ref={activePreviewViewportRef}
-                  >
-                    <LiveHtmlPreview
-                      iframeRef={(element) => {
-                        previewFrameRefs.current[activePreviewId] = element;
-                      }}
-                      interactive
-                      isStreaming={activePreviewResult.status === "streaming"}
-                      markup={activePreviewRevisionState.selectedRevision?.html ?? ""}
-                      overrideMarkup={activePreviewRevisionState.selectedRevision?.html ?? ""}
-                      previewId={activePreviewId}
-                      title={`${activePreviewResult.label} interactive preview`}
-                      />
-                    </div>
-
-                  {activePreviewToolErrors.length ? (
-                    <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_46%,var(--line))] bg-[linear-gradient(180deg,color-mix(in_oklch,var(--panel-strong)_84%,var(--danger)_16%),color-mix(in_oklch,var(--panel)_88%,black_8%))] p-3 text-sm text-[color-mix(in_oklch,var(--foreground)_96%,white)] shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_24%,transparent)] backdrop-blur-xl">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color-mix(in_oklch,var(--danger)_72%,white)]">
-                            Tool call failed
-                          </p>
-                          <div className="mt-2 space-y-2 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_96%,white)]">
-                            {activePreviewToolErrors.map((msg, i) => (
-                              <p key={`${activePreviewId}-modal-tool-err-${i}`}>
-                                {msg}
-                              </p>
-                            ))}
-                          </div>
-                        </div>
-                        <button
-                          className="shrink-0 rounded-full border border-[color-mix(in_oklch,var(--danger)_42%,transparent)] bg-[color-mix(in_oklch,var(--panel-strong)_82%,var(--danger)_18%)] px-3 py-1 text-xs font-semibold text-[color-mix(in_oklch,var(--foreground)_94%,white)] transition hover:bg-[color-mix(in_oklch,var(--panel-strong)_72%,var(--danger)_28%)]"
-                          onClick={() => dismissPreviewToolErrors(activePreviewId)}
-                          type="button"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                    </div>
-
-                    <div className="flex min-h-0 flex-col gap-3">
-                      <VisualComparisonPanel
-                        onRefresh={() => {
-                          void refreshVisualDiff(activePreviewId);
-                        }}
-                        referenceImageUrl={imageDataUrl}
-                        visualState={activePreviewVisualDiff}
-                      />
-                      <div className="rounded-[1rem] border border-(--line) bg-(--panel) p-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                          Agent trace
-                        </p>
-                        <div className="mt-3 max-h-[34rem] overflow-auto pr-1">
-                          <TraceTimeline
-                            events={readTraceEvents(activePreviewResult.stats).slice().reverse()}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-
-      {/* ── Prompt modal ─────────────────────────────────────────────────── */}
-      {isPromptModalOpen ? (
-        <div
-          className="modal-backdrop"
-          onClick={() => setIsPromptModalOpen(false)}
-        >
-          <div
-            className="modal-sheet"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex shrink-0 items-center justify-between border-b border-(--line) px-6 py-4">
-              <h2 className="text-sm font-semibold tracking-[-0.02em]">
-                Edit prompt
-              </h2>
-              <button
-                className="rounded-full bg-(--foreground) px-4 py-1.5 text-xs font-semibold text-(--background) transition hover:opacity-90"
-                onClick={() => setIsPromptModalOpen(false)}
-                type="button"
-              >
-                Done
-              </button>
-            </div>
-            <div className="flex-1 overflow-auto p-6">
-              <textarea
-                className="min-h-80 w-full resize-none bg-transparent text-sm leading-7 text-(--foreground) outline-none"
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Tell the models what kind of build guidance you want."
-                value={prompt}
-              />
-            </div>
-            <div className="shrink-0 border-t border-(--line) px-6 py-3">
-              <p className="text-xs text-(--muted)">
-                {prompt.length.toLocaleString()} characters
-              </p>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <BattlePromptModal
+        isOpen={isPromptModalOpen}
+        onClose={() => setIsPromptModalOpen(false)}
+        onPromptChange={setPrompt}
+        prompt={prompt}
+      />
 
       <input
         ref={fileInputRef}
