@@ -1,7 +1,6 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   type CSSProperties,
@@ -18,10 +17,12 @@ import {
 
 import { BattleAuthGate } from "@/components/battle/components/battle-auth-gate";
 import { BattleAgenticSettings } from "@/components/battle/components/battle-agentic-settings";
+import { BattleBanners } from "@/components/battle/components/battle-banners";
 import { BattleHistoryPanel } from "@/components/battle/components/battle-history-panel";
 import { BattleLoadingState } from "@/components/battle/components/battle-loading-state";
 import { BattlePreviewModal } from "@/components/battle/components/battle-preview-modal";
 import { BattlePromptModal } from "@/components/battle/components/battle-prompt-modal";
+import { BattleShellHeader } from "@/components/battle/components/battle-shell-header";
 import { BattleStatusStrip } from "@/components/battle/components/battle-status-strip";
 import { HostModelExplorerModal } from "@/components/battle/components/host-model-explorer-modal";
 import { OutputViewport } from "@/components/battle/components/output-viewport";
@@ -5240,292 +5241,57 @@ export function BattleClient({
     <main className="relative min-h-screen [overflow-x:clip] pb-16 pt-4 text-(--foreground)">
       <div className="grain" />
 
-      {/* ── Nav ──────────────────────────────────────────────────────────── */}
-      <header className="glass-shell floating-nav rise-in mx-auto flex max-w-[1600px] items-center gap-2 overflow-visible rounded-[3rem] px-3 py-1.5 sm:gap-3 sm:px-4">
-        {/* Brand */}
-        <div
-          className={cn(
-            "relative flex shrink-0 items-center gap-2.5 overflow-visible pl-1",
-            isSiteMenuOpen && "z-50",
-          )}
-          ref={siteMenuRef}
-        >
-          <h1 className="text-sm font-semibold tracking-[-0.02em]">
-            LLM Battle
-          </h1>
-          <span
-            aria-hidden="true"
-            className="h-3.5 w-px bg-(--foreground) opacity-20"
-          />
-          <button
-            aria-expanded={isSiteMenuOpen}
-            aria-haspopup="menu"
-            className="site-menu-trigger eyebrow-label inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium uppercase"
-            onClick={() => setIsSiteMenuOpen((current) => !current)}
-            type="button"
-          >
-            <span>Eval Harness</span>
-            <span
-              aria-hidden="true"
-              className={cn(
-                "text-[10px] transition-transform duration-250",
-                isSiteMenuOpen && "rotate-180",
-              )}
-            >
-              ▾
-            </span>
-          </button>
-          {isSiteMenuOpen ? (
-            <div className="site-menu-panel" role="menu">
-              <div className="site-menu-panel__section">
-                <p className="site-menu-panel__eyebrow">Navigate</p>
-                {EVAL_HARNESS_LINKS.map((item) => (
-                  <Link
-                    className={cn(
-                      "site-menu-panel__item",
-                      item.matchPathnames.includes(pathname) &&
-                        "site-menu-panel__item--active",
-                    )}
-                    href={item.href}
-                    key={item.href}
-                    onClick={() => setIsSiteMenuOpen(false)}
-                    role="menuitem"
-                  >
-                    <span className="site-menu-panel__label">{item.label}</span>
-                    <span className="site-menu-panel__meta">{item.meta}</span>
-                  </Link>
-                ))}
-              </div>
+      <BattleShellHeader
+        canStartRun={Boolean(imageDataUrl)}
+        canToggleOutputWhileRunning={!(isRunning && agenticOptions.enabled)}
+        cardSize={cardSize}
+        evalHarnessLinks={EVAL_HARNESS_LINKS}
+        historyCount={runs.length}
+        isAgenticEnabled={agenticOptions.enabled}
+        isAnonymousUser={isAnonymousUser}
+        isAuthActionPending={isAuthActionPending}
+        isEditLocked={isEditLocked}
+        isHistoryOpen={isHistoryOpen}
+        isRunning={isRunning}
+        isSiteMenuOpen={isSiteMenuOpen}
+        onCardSizeChange={(size) => withTransition(() => setCardSize(size))}
+        onCloseSiteMenu={() => setIsSiteMenuOpen(false)}
+        onCompare={handleCompare}
+        onHistoryToggle={() => {
+          const next = !isHistoryOpen;
+          setIsHistoryOpen(next);
+          if (next) void loadRuns();
+        }}
+        onNavigateToHistoryFromMenu={() => {
+          setIsSiteMenuOpen(false);
+          setIsHistoryOpen((current) => {
+            const next = !current;
+            if (next) void loadRuns();
+            return next;
+          });
+        }}
+        onNewRun={handleNewRun}
+        onOpenPromptModal={() => setIsPromptModalOpen(true)}
+        onOutputModeChange={setOutputMode}
+        onSignOut={() => {
+          void handleSignOut();
+        }}
+        onSiteMenuToggle={() => setIsSiteMenuOpen((current) => !current)}
+        onToggleAgenticMode={handleToggleAgenticMode}
+        outputMode={outputMode}
+        pathname={pathname}
+        signedInUserDisplayName={getUserDisplayName(signedInUser)}
+        signedInUserMonogram={getUserMonogram(signedInUser)}
+        siteMenuRef={siteMenuRef}
+      />
 
-              <div className="site-menu-panel__divider" />
-
-              <div className="site-menu-panel__section">
-                <p className="site-menu-panel__eyebrow">Workspace</p>
-                <button
-                  className={cn(
-                    "site-menu-panel__item text-left",
-                    isHistoryOpen && "site-menu-panel__item--active",
-                  )}
-                  onClick={() => {
-                    setIsSiteMenuOpen(false);
-                    setIsHistoryOpen((current) => {
-                      const next = !current;
-                      if (next) void loadRuns();
-                      return next;
-                    });
-                  }}
-                  role="menuitem"
-                  type="button"
-                >
-                  <span className="site-menu-panel__label">Run history</span>
-                  <span className="site-menu-panel__meta">
-                    {runs.length ? `${runs.length} saved runs` : "Recent sessions"}
-                  </span>
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Submenu */}
-        <div className="flex flex-1 items-center justify-center gap-0.5 overflow-x-auto">
-          <button
-            className="shrink-0 rounded-full px-3 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground)"
-            onClick={() => setIsPromptModalOpen(true)}
-            type="button"
-          >
-            Edit prompt
-          </button>
-
-          <button
-            className={cn(
-              "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-              agenticOptions.enabled
-                ? "bg-[color-mix(in_oklch,var(--accent)_22%,transparent)] text-(--foreground)"
-                : "text-(--muted) hover:bg-(--card-active) hover:text-(--foreground)",
-            )}
-            onClick={handleToggleAgenticMode}
-            type="button"
-          >
-            Agentic mode
-          </button>
-
-          <button
-            className={cn(
-              "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-              isHistoryOpen
-                ? "bg-(--card-active) text-(--foreground)"
-                : "text-(--muted) hover:bg-(--card-active) hover:text-(--foreground)",
-            )}
-            onClick={() => {
-              const next = !isHistoryOpen;
-              setIsHistoryOpen(next);
-              if (next) void loadRuns();
-            }}
-            type="button"
-          >
-            History{runs.length ? ` (${runs.length})` : ""}
-          </button>
-
-          <Link
-            className="shrink-0 rounded-full px-3 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground)"
-            href="/stats"
-          >
-            Stats
-          </Link>
-
-          <span
-            aria-hidden="true"
-            className="mx-1 hidden h-4 w-px shrink-0 bg-(--foreground) opacity-15 sm:block"
-          />
-
-          {/* Card size toggle */}
-          <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
-            {(["s", "m", "l", "xl"] as const).map((size) => (
-              <button
-                key={size}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-medium transition",
-                  cardSize === size
-                    ? "bg-(--foreground) text-(--background)"
-                    : "text-(--muted) hover:bg-(--card-active)",
-                )}
-                onClick={() => withTransition(() => setCardSize(size))}
-                type="button"
-              >
-                {size.toUpperCase()}
-              </button>
-            ))}
-          </div>
-
-          <span
-            aria-hidden="true"
-            className="mx-1 hidden h-4 w-px shrink-0 bg-(--foreground) opacity-15 sm:block"
-          />
-
-          {/* Output toggle */}
-          <div className="hidden shrink-0 items-center overflow-hidden rounded-full border border-(--line) sm:flex">
-            <button
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
-                outputMode === "preview"
-                  ? "bg-(--foreground) text-(--background)"
-                  : "text-(--muted) hover:bg-(--card-active)",
-              )}
-              disabled={isRunning && agenticOptions.enabled}
-              onClick={() => setOutputMode("preview")}
-              type="button"
-            >
-              Preview
-            </button>
-            <button
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
-                outputMode === "raw"
-                  ? "bg-(--foreground) text-(--background)"
-                  : "text-(--muted) hover:bg-(--card-active)",
-              )}
-              disabled={isRunning && agenticOptions.enabled}
-              onClick={() => setOutputMode("raw")}
-              type="button"
-            >
-              Raw
-            </button>
-            <button
-              className={cn(
-                "px-3 py-1.5 text-xs font-medium transition",
-                outputMode === "thinking"
-                  ? "bg-(--foreground) text-(--background)"
-                  : "text-(--muted) hover:bg-(--card-active)",
-              )}
-              onClick={() => setOutputMode("thinking")}
-              type="button"
-            >
-              Thinking
-            </button>
-          </div>
-
-          <span
-            aria-hidden="true"
-            className="mx-1 h-4 w-px shrink-0 bg-(--foreground) opacity-15"
-          />
-
-          {/* Run action */}
-          {isRunning ? (
-            <span className="flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-(--muted)">
-              <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-(--accent)" />
-              Running…
-            </span>
-          ) : isEditLocked ? (
-            <button
-              className="shrink-0 rounded-full bg-(--foreground) px-4 py-1.5 text-xs font-semibold text-(--background) transition hover:opacity-90"
-              onClick={handleNewRun}
-              type="button"
-            >
-              + New Run
-            </button>
-          ) : (
-            <button
-              className="shrink-0 rounded-full bg-(--accent) px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={!imageDataUrl}
-              onClick={handleCompare}
-              type="button"
-            >
-              Run ▸
-            </button>
-          )}
-        </div>
-
-        {/* User + sign out */}
-        <div className="flex shrink-0 items-center gap-1">
-          <div className="flex items-center gap-2 rounded-full py-1.5 pl-2 pr-3 [background:color-mix(in_oklch,var(--foreground)_7%,transparent)]">
-            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-(--accent-soft) text-[10px] font-semibold uppercase tracking-wide">
-              {getUserMonogram(signedInUser)}
-            </span>
-            <span className="hidden max-w-45 truncate text-xs font-medium sm:block">
-              {getUserDisplayName(signedInUser)}
-            </span>
-          </div>
-          <button
-            className="rounded-full px-4 py-1.5 text-xs font-medium text-(--muted) transition-colors hover:bg-(--card-active) hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={isAuthActionPending}
-            onClick={() => {
-              void handleSignOut();
-            }}
-            type="button"
-          >
-            {isAuthActionPending
-              ? "Signing out…"
-              : isAnonymousUser
-                ? "Reset guest"
-                : "Sign out"}
-          </button>
-        </div>
-      </header>
-
-      {/* ── Banners ──────────────────────────────────────────────────────── */}
-      <div className="mx-auto max-w-[1600px] px-4 sm:px-0">
-        {authError ? (
-          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-            {authError}
-          </div>
-        ) : null}
-        {errorMessage ? (
-          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-            {errorMessage}
-          </div>
-        ) : null}
-        {modelsError ? (
-          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-            {modelsError}
-          </div>
-        ) : null}
-        {isHydratingRouteRun ? (
-          <div className="rise-in mt-3 rounded-[1.4rem] border border-[color-mix(in_oklch,var(--foreground)_12%,transparent)] bg-[color-mix(in_oklch,var(--foreground)_5%,transparent)] px-4 py-3 text-sm text-(--muted)">
-            Loading run {initialRunId}…
-          </div>
-        ) : null}
-      </div>
+      <BattleBanners
+        authError={authError}
+        errorMessage={errorMessage}
+        initialRunId={initialRunId}
+        isHydratingRouteRun={isHydratingRouteRun}
+        modelsError={modelsError}
+      />
 
       {agenticOptions.enabled ? (
         <BattleAgenticSettings
