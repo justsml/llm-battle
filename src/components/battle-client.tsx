@@ -17,9 +17,12 @@ import {
 } from "react";
 
 import { BattleAuthGate } from "@/components/battle/components/battle-auth-gate";
+import { BattleAgenticSettings } from "@/components/battle/components/battle-agentic-settings";
+import { BattleHistoryPanel } from "@/components/battle/components/battle-history-panel";
 import { BattleLoadingState } from "@/components/battle/components/battle-loading-state";
 import { BattlePreviewModal } from "@/components/battle/components/battle-preview-modal";
 import { BattlePromptModal } from "@/components/battle/components/battle-prompt-modal";
+import { BattleStatusStrip } from "@/components/battle/components/battle-status-strip";
 import { HostModelExplorerModal } from "@/components/battle/components/host-model-explorer-modal";
 import { OutputViewport } from "@/components/battle/components/output-viewport";
 import { RevisionNavigator } from "@/components/battle/components/revision-navigator";
@@ -5178,6 +5181,20 @@ export function BattleClient({
     aggregateStatus.completedCount +
     aggregateStatus.streamingCount +
     aggregateStatus.errorCount;
+  const aggregateHeadline =
+    aggregateStatus.streamingCount
+      ? `${aggregateStatus.streamingCount} streaming`
+      : aggregateStatus.completedCount
+        ? `${aggregateStatus.completedCount} complete`
+        : `${aggregateStatus.errorCount} ended with errors`;
+  const aggregateTokenLabel = formatLiveTokenCount(
+    aggregateStatus.totalTokens,
+    aggregateStatus.hasEstimatedTokens,
+  );
+  const aggregateCostLabel =
+    aggregateStatus.hasEstimatedCost && aggregateStatus.totalCost != null
+      ? `~${formatCost(aggregateStatus.totalCost)}`
+      : formatCost(aggregateStatus.totalCost);
 
   const shouldShowInitialLoadingState =
     isSessionPending
@@ -5511,151 +5528,34 @@ export function BattleClient({
       </div>
 
       {agenticOptions.enabled ? (
-        <div className="rise-in mx-auto mt-3 max-w-[1600px] px-4 sm:px-0">
-          <section className="panel rounded-[1.75rem] p-4 sm:p-5">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div className="max-w-2xl">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-(--muted)">
-                  Agentic mode
-                </p>
-                <p className="mt-2 text-sm leading-6 text-(--muted)">
-                  LLM Tools: `get_screenshot`, `get_console_logs`, `get_html`, and `set_html`.
-                </p>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,180px)_minmax(0,220px)]">
-                <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                  <span>Max turns</span>
-                  <input
-                    className="rounded-[1rem] border border-(--line) bg-(--card) px-3 py-2 text-sm font-medium tracking-normal text-(--foreground) outline-none transition focus:border-(--accent)"
-                    max={12}
-                    min={1}
-                    onChange={(event) =>
-                      setAgenticOptions((current) => ({
-                        ...current,
-                        maxTurns: Math.max(
-                          1,
-                          Math.min(12, Number(event.target.value) || 1),
-                        ),
-                      }))
-                    }
-                    type="number"
-                    value={agenticOptions.maxTurns}
-                  />
-                </label>
-
-                <label className="flex items-center gap-3 rounded-[1rem] border border-(--line) bg-(--card) px-3 py-3 text-sm text-(--foreground)">
-                  <input
-                    checked={agenticOptions.todoListTool}
-                    className="h-4 w-4 accent-[var(--accent)]"
-                    onChange={(event) =>
-                      setAgenticOptions((current) => ({
-                        ...current,
-                        todoListTool: event.target.checked,
-                      }))
-                    }
-                    type="checkbox"
-                  />
-                  <span>Enable `todo_list` tool</span>
-                </label>
-              </div>
-            </div>
-          </section>
-        </div>
+        <BattleAgenticSettings
+          agenticOptions={agenticOptions}
+          onOptionsChange={(updater) => {
+            setAgenticOptions((current) => updater(current));
+          }}
+        />
       ) : null}
 
       {/* ── History panel ────────────────────────────────────────────────── */}
       {isHistoryOpen ? (
-        <div className="rise-in mx-auto mt-3 max-w-[1600px] overflow-hidden rounded-[1.75rem] border border-(--line) bg-(--card) p-4 px-4 sm:px-0">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-semibold tracking-[-0.01em]">
-              Run history
-            </p>
-            <span className="text-xs text-(--muted)">
-              {isLoadingRuns ? "Refreshing…" : `${runs.length} saved`}
-            </span>
-          </div>
-          {runsError ? (
-            <div className="mb-3 rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-4 py-3 text-sm text-(--danger)">
-              {runsError}
-            </div>
-          ) : null}
-          {runs.length ? (
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {runs.map((run, index) => (
-                <button
-                  key={run.id}
-                  className={cn(
-                    "w-full rounded-[1.3rem] border px-4 py-3 text-left transition hover:bg-(--card-active)",
-                    activeRunId === run.id
-                      ? "border-(--foreground) bg-(--card-active)"
-                      : "border-(--line)",
-                  )}
-                  onClick={() => hydrateRun(run)}
-                  type="button"
-                >
-                  <div className="mb-1.5 flex items-center justify-between gap-3">
-                    <span className="text-xs font-semibold text-(--muted)">
-                      Run {runs.length - index}
-                    </span>
-                    <span className="text-[11px] text-(--muted)">
-                      {formatTimestamp(run.createdAt)}
-                    </span>
-                  </div>
-                  <p className="line-clamp-2 text-xs leading-5">{run.prompt}</p>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-[1.5rem] border border-dashed border-(--line) px-5 py-6 text-center text-sm text-(--muted)">
-              {isLoadingRuns ? "Loading…" : "No saved runs yet."}
-            </div>
-          )}
-        </div>
+        <BattleHistoryPanel
+          activeRunId={activeRunId}
+          formatTimestamp={formatTimestamp}
+          isLoadingRuns={isLoadingRuns}
+          runs={runs}
+          runsError={runsError}
+          onSelectRun={hydrateRun}
+        />
       ) : null}
 
       {aggregateActiveCount ? (
-        <div className="status-strip-dock">
-          <section className="status-strip glass-shell rise-in mx-auto max-w-[1600px]">
-            <div className="status-strip__intro">
-              <p className="status-strip__eyebrow">Run totals</p>
-              <p className="status-strip__headline">
-                {aggregateStatus.streamingCount
-                  ? `${aggregateStatus.streamingCount} streaming`
-                  : aggregateStatus.completedCount
-                    ? `${aggregateStatus.completedCount} complete`
-                    : `${aggregateStatus.errorCount} ended with errors`}
-              </p>
-            </div>
-
-            <div className="status-strip__stats">
-              <div className="status-strip__stat">
-                <span className="status-strip__label">Cards</span>
-                <strong className="status-strip__value">
-                  {aggregateActiveCount}/{selectedModels.length}
-                </strong>
-              </div>
-              <div className="status-strip__stat">
-                <span className="status-strip__label">Total tokens</span>
-                <strong className="status-strip__value">
-                  {formatLiveTokenCount(
-                    aggregateStatus.totalTokens,
-                    aggregateStatus.hasEstimatedTokens,
-                  )}
-                </strong>
-              </div>
-              <div className="status-strip__stat">
-                <span className="status-strip__label">Total cost</span>
-                <strong className="status-strip__value">
-                  {aggregateStatus.hasEstimatedCost &&
-                  aggregateStatus.totalCost != null
-                    ? `~${formatCost(aggregateStatus.totalCost)}`
-                    : formatCost(aggregateStatus.totalCost)}
-                </strong>
-              </div>
-            </div>
-          </section>
-        </div>
+        <BattleStatusStrip
+          activeCount={aggregateActiveCount}
+          cardCount={selectedModels.length}
+          costLabel={aggregateCostLabel}
+          headline={aggregateHeadline}
+          tokenLabel={aggregateTokenLabel}
+        />
       ) : null}
 
       {/* ── Card grid ────────────────────────────────────────────────────── */}
