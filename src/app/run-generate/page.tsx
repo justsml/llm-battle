@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 
-import { BuildOffClient } from "@/components/build-off-client";
+import { BattleClient } from "@/components/battle-client";
 import {
   isGitHubAuthConfigured,
   shouldUseLocalDevAuthForHost,
@@ -21,7 +21,7 @@ export default async function RunGeneratePage({
   const resolvedSearchParams = await searchParams;
 
   return (
-    <BuildOffClient
+    <BattleClient
       authConfig={{
         githubConfigured: isGitHubAuthConfigured(),
         allowLocalDevAutoAuth: shouldUseLocalDevAuthForHost(requestHost),

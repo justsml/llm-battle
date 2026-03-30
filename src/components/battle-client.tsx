@@ -44,8 +44,8 @@ import type {
 import { cn, sanitizeTokensPerSecond } from "@/lib/utils";
 
 const MAX_RUNS = 20;
-const LOCAL_DRAFT_KEY = "build-off:draft:v1";
-const LOCAL_RECENT_MODELS_KEY = "build-off:recent-models:v1";
+const LOCAL_DRAFT_KEY = "battle:draft:v1";
+const LOCAL_RECENT_MODELS_KEY = "battle:recent-models:v1";
 const MIN_MODEL_CARDS = 2;
 const MAX_MODEL_CARDS = 12;
 const RECENT_MODEL_LIMIT = 24;
@@ -130,7 +130,7 @@ type ModelCardWorkspaceState = {
   visualDiffs: Record<string, VisualDiffState>;
 };
 
-type BuildOffClientProps = {
+type BattleClientProps = {
   authConfig: {
     githubConfigured: boolean;
     allowLocalDevAutoAuth: boolean;
@@ -1061,7 +1061,7 @@ function createPreviewSrcDoc(
     try {
       window.parent.postMessage(
         {
-          source: "build-off-preview",
+          source: "battle-preview",
           previewId,
           kind,
           message: typeof message === "string" ? message : String(message ?? ""),
@@ -1075,7 +1075,7 @@ function createPreviewSrcDoc(
     try {
       window.parent.postMessage(
         {
-          source: "build-off-preview",
+          source: "battle-preview",
           previewId,
           kind: error ? "command-error" : "command-result",
           commandId,
@@ -1390,7 +1390,7 @@ function createPreviewSrcDoc(
     if (
       !data ||
       typeof data !== "object" ||
-      data.source !== "build-off-preview-parent" ||
+      data.source !== "battle-preview-parent" ||
       data.previewId !== previewId ||
       typeof data.commandId !== "string" ||
       typeof data.action !== "string"
@@ -2717,11 +2717,11 @@ function TraceTimeline({
   );
 }
 
-export function BuildOffClient({
+export function BattleClient({
   authConfig,
   initialRunId,
   initialAgenticEnabled = false,
-}: BuildOffClientProps) {
+}: BattleClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const { data: sessionData, isPending: isSessionPending } =
@@ -2854,7 +2854,9 @@ export function BuildOffClient({
   );
   const signedInUser = sessionData?.user ?? null;
   const signedInUserId = signedInUser?.id ?? null;
-  const isAnonymousUser = Boolean(signedInUser?.isAnonymous);
+  const isAnonymousUser = Boolean(
+    (signedInUser as { isAnonymous?: boolean } | null)?.isAnonymous,
+  );
   const currentModelCardModeKey = getModelCardModeKey(agenticOptions.enabled);
   const maxSelectableCards = getMaxSelectableModelCards(
     catalog,
@@ -4029,7 +4031,7 @@ export function BuildOffClient({
       if (
         !data ||
         typeof data !== "object" ||
-        data.source !== "build-off-preview" ||
+        data.source !== "battle-preview" ||
         typeof data.previewId !== "string" ||
         typeof data.kind !== "string"
       ) {
@@ -4353,7 +4355,7 @@ export function BuildOffClient({
 
       target.postMessage(
         {
-          source: "build-off-preview-parent",
+          source: "battle-preview-parent",
           previewId,
           commandId,
           action,
@@ -5098,7 +5100,11 @@ export function BuildOffClient({
     setIsAuthActionPending(true);
 
     try {
-      await authClient.signIn.anonymous();
+      await (
+        authClient.signIn as typeof authClient.signIn & {
+          anonymous: () => Promise<unknown>;
+        }
+      ).anonymous();
     } catch (error) {
       setAuthError(
         error instanceof Error
@@ -5240,7 +5246,7 @@ export function BuildOffClient({
 
   async function handleCompare() {
     if (!signedInUser) {
-      setErrorMessage("Sign in to run a build-off.");
+      setErrorMessage("Sign in to run a battle.");
       return;
     }
 
@@ -5844,7 +5850,7 @@ export function BuildOffClient({
             <h1 className="mt-3 text-3xl font-semibold tracking-[-0.05em] sm:text-4xl">
               {authConfig.allowLocalDevAutoAuth
                 ? "Preparing your localhost dev session"
-                : "Sign in to save and compare build-off runs"}
+                : "Sign in to save and compare battle runs"}
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-(--muted) sm:text-base">
               {authConfig.allowLocalDevAutoAuth

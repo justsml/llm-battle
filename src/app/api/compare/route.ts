@@ -1018,7 +1018,7 @@ export async function POST(request: Request) {
   const session = await getServerSession(request);
   if (!session?.user) {
     return Response.json(
-      { error: "Sign in to run a build-off." },
+      { error: "Sign in to run a battle." },
       { status: 401 },
     );
   }
@@ -1131,7 +1131,9 @@ export async function POST(request: Request) {
       streamController = createCompareStreamController(controller);
 
       try {
-        sendEvent(streamController, {
+        const activeStream = streamController;
+
+        sendEvent(activeStream, {
           type: "ready",
           runId,
           modelIds: models.map((model) => model.id),
@@ -1143,7 +1145,7 @@ export async function POST(request: Request) {
         const finalResults = await Promise.all(
           models.map(async (model, modelIndex) => {
             const result = await streamModelResult(
-              streamController,
+              activeStream,
               model,
               catalogModelMap.get(parseModelConfig(model).raw),
               prompt,

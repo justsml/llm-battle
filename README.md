@@ -124,7 +124,7 @@ src/
 │   ├── layout.tsx
 │   └── page.tsx
 ├── components/
-│   └── build-off-client.tsx # Main UI component
+│   └── battle-client.tsx # Main UI component
 └── lib/
     ├── auth.ts              # Better Auth server config
     ├── auth-client.ts       # Client-side auth helpers
