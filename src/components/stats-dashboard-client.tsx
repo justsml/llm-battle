@@ -57,6 +57,56 @@ type ResultSortKey =
   | "tokensPerSecond"
   | "cost";
 
+type ScopeMode = "all" | "run" | "range";
+
+type HistogramMetricKey =
+  | "avgScore"
+  | "successRate"
+  | "avgRuntimeMs"
+  | "avgTotalTokens"
+  | "avgTokensPerSecond"
+  | "totalCost";
+
+type HistogramMetricConfig = {
+  key: HistogramMetricKey;
+  label: string;
+  accent: string;
+  preferLower: boolean;
+  formatter: (value?: number) => string;
+};
+
+type RankingMetricConfig = {
+  key: HistogramMetricKey | "avgLatencyMs";
+  label: string;
+  note: string;
+  preferLower: boolean;
+  formatter: (value?: number) => string;
+};
+
+type PieSlice = {
+  label: string;
+  value: number;
+  color: string;
+};
+
+const STATUS_COLORS: Record<ModelResult["status"], string> = {
+  done: "#0f8a62",
+  error: "#c14953",
+  streaming: "#d88716",
+  idle: "#6d7485",
+};
+
+const PIE_COLORS = [
+  "#d95f3c",
+  "#5a7dff",
+  "#1d9b7d",
+  "#d59d1d",
+  "#9757d7",
+  "#4d6b51",
+  "#ce4a8b",
+  "#7b6d5d",
+];
+
 function formatTimestamp(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
@@ -65,6 +115,25 @@ function formatTimestamp(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatDateInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatScopeLabel(scope: ScopeMode, selectedRun?: SavedRun | null) {
+  if (scope === "run" && selectedRun) {
+    return `Single run from ${formatTimestamp(selectedRun.createdAt)}`;
+  }
+
+  if (scope === "range") {
+    return "Custom time range";
+  }
+
+  return "All saved runs";
 }
 
 function formatTimeAgo(value: string) {
@@ -94,18 +163,18 @@ function formatTimeAgo(value: string) {
 }
 
 function formatDuration(ms?: number) {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
 }
 
 function formatTokenCount(value?: number) {
-  if (value == null) return "—";
+  if (value == null || !Number.isFinite(value)) return "—";
   return new Intl.NumberFormat().format(value);
 }
 
 function formatCost(value?: number) {
-  if (value == null) return "—";
+  if (value == null || !Number.isFinite(value)) return "—";
   if (value === 0) return "$0.000000";
 
   return new Intl.NumberFormat(undefined, {
@@ -117,7 +186,7 @@ function formatCost(value?: number) {
 }
 
 function formatPercent(value?: number) {
-  if (value == null) return "—";
+  if (value == null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(value >= 99 || value <= 1 ? 0 : 1)}%`;
 }
 
@@ -131,9 +200,9 @@ function formatTokensPerSecond(value?: number) {
 }
 
 function formatVoteScore(score?: number) {
-  if (score == null) return "—";
-  if (score > 0) return `+${score}`;
-  return String(score);
+  if (score == null || !Number.isFinite(score)) return "—";
+  if (score > 0) return `+${score.toFixed(score % 1 === 0 ? 0 : 1)}`;
+  return score.toFixed(score % 1 === 0 ? 0 : 1);
 }
 
 function getStatusTone(status: ModelResult["status"]) {
@@ -192,12 +261,299 @@ function compareValues(left: string | number, right: string | number) {
   return Number(left) - Number(right);
 }
 
+function getDateDaysAgo(days: number) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - days);
+  return formatDateInputValue(date);
+}
+
+function normalizeDateRange(start: string, end: string) {
+  const startMs = start ? new Date(`${start}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
+  const endMs = end ? new Date(`${end}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
+
+  return {
+    startMs,
+    endMs,
+    isValid: Number.isFinite(startMs) && Number.isFinite(endMs) && startMs <= endMs,
+  };
+}
+
+function getHistogramValue(entry: ModelAggregate, key: HistogramMetricKey | "avgLatencyMs") {
+  return entry[key];
+}
+
+function sortAggregatesByMetric(
+  entries: ModelAggregate[],
+  key: HistogramMetricKey | "avgLatencyMs",
+  preferLower: boolean,
+) {
+  return [...entries].sort((left, right) => {
+    const leftValue = getHistogramValue(left, key);
+    const rightValue = getHistogramValue(right, key);
+
+    if (leftValue == null && rightValue == null) return 0;
+    if (leftValue == null) return 1;
+    if (rightValue == null) return -1;
+
+    return preferLower ? leftValue - rightValue : rightValue - leftValue;
+  });
+}
+
+function buildModelShareSlices(entries: ModelAggregate[]) {
+  const ranked = [...entries].sort((left, right) => right.runs - left.runs);
+  const top = ranked.slice(0, 5).map((entry, index) => ({
+    label: getCollapsedModelLabel(entry.modelId),
+    value: entry.runs,
+    color: PIE_COLORS[index % PIE_COLORS.length],
+  }));
+  const remaining = ranked.slice(5).reduce((sum, entry) => sum + entry.runs, 0);
+
+  if (remaining > 0) {
+    top.push({
+      label: "Other",
+      value: remaining,
+      color: "#80776d",
+    });
+  }
+
+  return top;
+}
+
+function buildStatusSlices(entries: FlattenedResult[]) {
+  const counts = new Map<ModelResult["status"], number>();
+
+  for (const entry of entries) {
+    counts.set(entry.result.status, (counts.get(entry.result.status) ?? 0) + 1);
+  }
+
+  return (Object.keys(STATUS_COLORS) as ModelResult["status"][])
+    .map((status) => ({
+      label: status,
+      value: counts.get(status) ?? 0,
+      color: STATUS_COLORS[status],
+    }))
+    .filter((slice) => slice.value > 0);
+}
+
+function PieChart({
+  slices,
+  centerLabel,
+  centerValue,
+}: {
+  slices: PieSlice[];
+  centerLabel: string;
+  centerValue: string;
+}) {
+  const total = slices.reduce((sum, slice) => sum + slice.value, 0);
+  const radius = 44;
+  const circumference = 2 * Math.PI * radius;
+  const chartSlices = slices.map((slice, index) => {
+    const segmentLength = total ? (slice.value / total) * circumference : 0;
+    const segmentOffset = slices
+      .slice(0, index)
+      .reduce((sum, previous) => sum + (total ? (previous.value / total) * circumference : 0), 0);
+
+    return {
+      ...slice,
+      segmentLength,
+      segmentOffset,
+    };
+  });
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[140px_minmax(0,1fr)] lg:items-center">
+      <div className="relative mx-auto h-36 w-36">
+        <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
+          <circle
+            cx="60"
+            cy="60"
+            fill="none"
+            r={radius}
+            stroke="color-mix(in oklch, var(--foreground) 8%, transparent)"
+            strokeWidth="18"
+          />
+          {chartSlices.map((slice) => (
+            <circle
+              cx="60"
+              cy="60"
+              fill="none"
+              key={slice.label}
+              r={radius}
+              stroke={slice.color}
+              strokeDasharray={`${slice.segmentLength} ${circumference - slice.segmentLength}`}
+              strokeDashoffset={-slice.segmentOffset}
+              strokeLinecap="butt"
+              strokeWidth="18"
+            />
+          ))}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-(--muted)">
+            {centerLabel}
+          </span>
+          <span className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
+            {centerValue}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {slices.length ? (
+          slices.map((slice) => {
+            const share = total ? (slice.value / total) * 100 : 0;
+            return (
+              <div
+                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)] px-3 py-2.5"
+                key={slice.label}
+              >
+                <span
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ backgroundColor: slice.color }}
+                />
+                <span className="truncate text-sm font-medium capitalize">{slice.label}</span>
+                <span className="text-xs text-(--muted)">
+                  {formatPercent(share)} · {formatTokenCount(slice.value)}
+                </span>
+              </div>
+            );
+          })
+        ) : (
+          <div className="rounded-[1rem] border border-dashed border-(--line) px-4 py-6 text-sm text-(--muted)">
+            No slices to chart yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HistogramPanel({
+  title,
+  subtitle,
+  entries,
+  metric,
+}: {
+  title: string;
+  subtitle: string;
+  entries: ModelAggregate[];
+  metric: HistogramMetricConfig;
+}) {
+  const ranked = sortAggregatesByMetric(entries, metric.key, metric.preferLower)
+    .filter((entry) => getHistogramValue(entry, metric.key) != null)
+    .slice(0, 6);
+  const maxValue = ranked.reduce((max, entry) => {
+    const value = getHistogramValue(entry, metric.key) ?? 0;
+    return Math.max(max, value);
+  }, 0);
+
+  return (
+    <div className="rounded-[1.6rem] border border-(--line) bg-[linear-gradient(180deg,color-mix(in_oklch,var(--panel)_94%,transparent),color-mix(in_oklch,var(--card)_94%,transparent))] p-4">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+        {title}
+      </p>
+      <p className="mt-1 text-sm text-[color-mix(in_oklch,var(--foreground)_72%,transparent)]">
+        {subtitle}
+      </p>
+
+      <div className="mt-4 space-y-3">
+        {ranked.length ? (
+          ranked.map((entry, index) => {
+            const value = getHistogramValue(entry, metric.key);
+            const width = maxValue > 0 && value != null ? Math.max((value / maxValue) * 100, 8) : 0;
+
+            return (
+              <div key={`${metric.key}:${entry.modelId}`}>
+                <div className="mb-1.5 flex items-baseline justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">
+                      {index + 1}. {getCollapsedModelLabel(entry.modelId)}
+                    </p>
+                    <p className="truncate text-[11px] text-(--muted)">{entry.modelId}</p>
+                  </div>
+                  <span className="shrink-0 text-sm font-medium">{metric.formatter(value)}</span>
+                </div>
+                <div className="h-2.5 rounded-full bg-[color-mix(in_oklch,var(--foreground)_7%,transparent)]">
+                  <div
+                    className="h-full rounded-full transition-[width]"
+                    style={{
+                      width: `${width}%`,
+                      background: `linear-gradient(90deg, ${metric.accent}, color-mix(in srgb, ${metric.accent} 55%, white))`,
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="rounded-[1rem] border border-dashed border-(--line) px-4 py-6 text-sm text-(--muted)">
+            No model aggregates available for this metric.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RankingPanel({
+  title,
+  entries,
+  metric,
+}: {
+  title: string;
+  entries: ModelAggregate[];
+  metric: RankingMetricConfig;
+}) {
+  const ranked = sortAggregatesByMetric(entries, metric.key, metric.preferLower)
+    .filter((entry) => getHistogramValue(entry, metric.key) != null)
+    .slice(0, 5);
+
+  return (
+    <div className="rounded-[1.5rem] border border-(--line) bg-(--card) p-4">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+        {title}
+      </p>
+      <p className="mt-1 text-xs leading-5 text-(--muted)">{metric.note}</p>
+
+      <div className="mt-4 space-y-2">
+        {ranked.length ? (
+          ranked.map((entry, index) => (
+            <div
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)] px-3 py-2.5"
+              key={`${metric.key}:${entry.modelId}`}
+            >
+              <span className="text-sm font-semibold text-(--muted)">{index + 1}</span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">
+                  {getCollapsedModelLabel(entry.modelId)}
+                </p>
+                <p className="truncate text-[11px] text-(--muted)">{entry.modelId}</p>
+              </div>
+              <span className="text-sm font-medium">
+                {metric.formatter(getHistogramValue(entry, metric.key))}
+              </span>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-[1rem] border border-dashed border-(--line) px-4 py-6 text-sm text-(--muted)">
+            Not enough data in the current filter.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function StatsDashboardClient() {
   const [runs, setRuns] = useState<SavedRun[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | ModelResult["status"]>("all");
+  const [scopeMode, setScopeMode] = useState<ScopeMode>("all");
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const [rangeStart, setRangeStart] = useState(getDateDaysAgo(30));
+  const [rangeEnd, setRangeEnd] = useState(formatDateInputValue(new Date()));
   const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSortKey>("avgScore");
   const [resultSort, setResultSort] = useState<ResultSortKey>("runCreatedAt");
   const [resultSortDirection, setResultSortDirection] = useState<"asc" | "desc">("desc");
@@ -242,7 +598,40 @@ export function StatsDashboardClient() {
     };
   }, []);
 
-  const flattenedResults = runs.flatMap<FlattenedResult>((run) =>
+  const sortedRuns = [...runs].sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  );
+  const selectedRun =
+    sortedRuns.find((run) => run.id === selectedRunId) ?? sortedRuns[0] ?? null;
+
+  useEffect(() => {
+    if (!sortedRuns.length) {
+      if (selectedRunId) setSelectedRunId("");
+      return;
+    }
+
+    if (!selectedRunId || !sortedRuns.some((run) => run.id === selectedRunId)) {
+      setSelectedRunId(sortedRuns[0].id);
+    }
+  }, [selectedRunId, sortedRuns]);
+
+  const normalizedRange = normalizeDateRange(rangeStart, rangeEnd);
+
+  const scopedRuns = sortedRuns.filter((run) => {
+    if (scopeMode === "run") {
+      return selectedRun ? run.id === selectedRun.id : false;
+    }
+
+    if (scopeMode === "range") {
+      if (!normalizedRange.isValid) return false;
+      const createdAtMs = new Date(run.createdAt).getTime();
+      return createdAtMs >= normalizedRange.startMs && createdAtMs <= normalizedRange.endMs;
+    }
+
+    return true;
+  });
+
+  const flattenedResults = scopedRuns.flatMap<FlattenedResult>((run) =>
     run.results.map((result, modelIndex) => ({
       id: `${run.id}:${modelIndex}`,
       runId: run.id,
@@ -320,32 +709,32 @@ export function StatsDashboardClient() {
     leaderboardMap.set(entry.modelId, existing);
   }
 
-  const leaderboard = [...leaderboardMap.values()]
-    .map((entry) => ({
-      ...entry,
-      avgScore: entry.runs ? (entry.avgScore ?? 0) / entry.runs : undefined,
-      avgLatencyMs: entry.runs ? (entry.avgLatencyMs ?? 0) / entry.runs : undefined,
-      avgRuntimeMs: entry.runs ? (entry.avgRuntimeMs ?? 0) / entry.runs : undefined,
-      avgTotalTokens: entry.runs ? (entry.avgTotalTokens ?? 0) / entry.runs : undefined,
-      avgToolCalls: entry.runs ? (entry.avgToolCalls ?? 0) / entry.runs : undefined,
-      avgTokensPerSecond: entry.runs
-        ? (entry.avgTokensPerSecond ?? 0) / entry.runs
-        : undefined,
-      successRate: entry.runs ? (entry.completed / entry.runs) * 100 : undefined,
-    }))
-    .sort((left, right) => {
-      if (leaderboardSort === "lastSeenAt") {
-        return new Date(right.lastSeenAt).getTime() - new Date(left.lastSeenAt).getTime();
-      }
+  const leaderboardBase = [...leaderboardMap.values()].map((entry) => ({
+    ...entry,
+    avgScore: entry.runs ? (entry.avgScore ?? 0) / entry.runs : undefined,
+    avgLatencyMs: entry.runs ? (entry.avgLatencyMs ?? 0) / entry.runs : undefined,
+    avgRuntimeMs: entry.runs ? (entry.avgRuntimeMs ?? 0) / entry.runs : undefined,
+    avgTotalTokens: entry.runs ? (entry.avgTotalTokens ?? 0) / entry.runs : undefined,
+    avgToolCalls: entry.runs ? (entry.avgToolCalls ?? 0) / entry.runs : undefined,
+    avgTokensPerSecond: entry.runs
+      ? (entry.avgTokensPerSecond ?? 0) / entry.runs
+      : undefined,
+    successRate: entry.runs ? (entry.completed / entry.runs) * 100 : undefined,
+  }));
 
-      if (leaderboardSort === "avgLatencyMs" || leaderboardSort === "avgRuntimeMs") {
-        return (left[leaderboardSort] ?? Number.POSITIVE_INFINITY)
-          - (right[leaderboardSort] ?? Number.POSITIVE_INFINITY);
-      }
+  const leaderboard = [...leaderboardBase].sort((left, right) => {
+    if (leaderboardSort === "lastSeenAt") {
+      return new Date(right.lastSeenAt).getTime() - new Date(left.lastSeenAt).getTime();
+    }
 
-      return (right[leaderboardSort] ?? Number.NEGATIVE_INFINITY)
-        - (left[leaderboardSort] ?? Number.NEGATIVE_INFINITY);
-    });
+    if (leaderboardSort === "avgLatencyMs" || leaderboardSort === "avgRuntimeMs") {
+      return (left[leaderboardSort] ?? Number.POSITIVE_INFINITY)
+        - (right[leaderboardSort] ?? Number.POSITIVE_INFINITY);
+    }
+
+    return (right[leaderboardSort] ?? Number.NEGATIVE_INFINITY)
+      - (left[leaderboardSort] ?? Number.NEGATIVE_INFINITY);
+  });
 
   const sortedResults = [...filteredResults].sort((left, right) => {
     const comparison = compareValues(
@@ -379,6 +768,103 @@ export function StatsDashboardClient() {
   const completionRate = filteredResults.length
     ? (filteredResults.filter((entry) => entry.result.status === "done").length / filteredResults.length) * 100
     : undefined;
+  const scopeLabel = formatScopeLabel(scopeMode, selectedRun);
+  const modelShareSlices = buildModelShareSlices(leaderboardBase);
+  const statusSlices = buildStatusSlices(filteredResults);
+  const rangeError =
+    scopeMode === "range" && !normalizedRange.isValid
+      ? "Choose a valid start and end date."
+      : "";
+
+  const histogramMetrics: HistogramMetricConfig[] = [
+    {
+      key: "avgScore",
+      label: "Score",
+      accent: "#d95f3c",
+      preferLower: false,
+      formatter: formatVoteScore,
+    },
+    {
+      key: "successRate",
+      label: "Success",
+      accent: "#1d9b7d",
+      preferLower: false,
+      formatter: formatPercent,
+    },
+    {
+      key: "avgRuntimeMs",
+      label: "Runtime",
+      accent: "#5a7dff",
+      preferLower: true,
+      formatter: formatDuration,
+    },
+    {
+      key: "avgTotalTokens",
+      label: "Tokens",
+      accent: "#d59d1d",
+      preferLower: false,
+      formatter: formatTokenCount,
+    },
+    {
+      key: "avgTokensPerSecond",
+      label: "Out/sec",
+      accent: "#9757d7",
+      preferLower: false,
+      formatter: formatTokensPerSecond,
+    },
+    {
+      key: "totalCost",
+      label: "Spend",
+      accent: "#4d6b51",
+      preferLower: false,
+      formatter: formatCost,
+    },
+  ];
+
+  const rankingMetrics: RankingMetricConfig[] = [
+    {
+      key: "avgScore",
+      label: "Best score",
+      note: "Highest average vote score across the filtered slice.",
+      preferLower: false,
+      formatter: formatVoteScore,
+    },
+    {
+      key: "successRate",
+      label: "Most reliable",
+      note: "Highest completion rate inside the current selection.",
+      preferLower: false,
+      formatter: formatPercent,
+    },
+    {
+      key: "avgLatencyMs",
+      label: "Fastest first token",
+      note: "Lower average latency ranks higher.",
+      preferLower: true,
+      formatter: formatDuration,
+    },
+    {
+      key: "avgRuntimeMs",
+      label: "Fastest finish",
+      note: "Lower average runtime ranks higher.",
+      preferLower: true,
+      formatter: formatDuration,
+    },
+    {
+      key: "avgTokensPerSecond",
+      label: "Highest throughput",
+      note: "Best output tokens per second from saved runs.",
+      preferLower: false,
+      formatter: formatTokensPerSecond,
+    },
+    {
+      key: "totalCost",
+      label: "Highest spend",
+      note: "Most expensive footprint in the current slice.",
+      preferLower: false,
+      formatter: formatCost,
+    },
+  ];
 
   return (
     <main className="relative min-h-screen [overflow-x:clip] pb-20 pt-4 text-(--foreground)">
@@ -404,20 +890,21 @@ export function StatsDashboardClient() {
         </div>
       </header>
 
-      <section className="mx-auto mt-4 grid max-w-[1600px] gap-4 px-4 sm:px-0 xl:grid-cols-[1.25fr_0.95fr]">
+      <section className="mx-auto mt-4 grid max-w-[1600px] gap-4 px-4 sm:px-0 xl:grid-cols-[1.2fr_1fr]">
         <div className="glass-shell rise-in overflow-hidden rounded-[2.4rem] px-6 py-6 sm:px-8">
           <p className="eyebrow-label text-[11px] font-semibold uppercase">
-            Cross-run analysis
+            Model observatory
           </p>
-          <div className="mt-5 grid gap-8 lg:grid-cols-[minmax(0,1.1fr)_minmax(260px,0.75fr)]">
+          <div className="mt-5 grid gap-8 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.8fr)]">
             <div>
               <h2 className="max-w-3xl font-[var(--font-serif)] text-4xl leading-[0.95] tracking-[-0.05em] sm:text-5xl">
-                Compare every stored model result through one sortable, historical lens.
+                Aggregate every saved result by model, then slice it by run or time window.
               </h2>
               <p className="mt-4 max-w-2xl text-sm leading-7 text-[color-mix(in_oklch,var(--foreground)_72%,transparent)] sm:text-base">
-                This page turns your saved build-offs into a rolling lab notebook:
-                model leaderboards, cost and speed patterns, and a ledger of every output
-                you have generated so far.
+                The stats view now rolls up performance per model first, then projects that
+                same filtered data into pie summaries, histogram-style comparisons, and
+                stat-by-stat rankings so you can switch from one run to a broader trend line
+                without losing context.
               </p>
             </div>
 
@@ -426,19 +913,19 @@ export function StatsDashboardClient() {
               <div className="grid gap-3">
                 {[
                   {
-                    label: "Saved runs",
-                    value: runs.length.toString(),
-                    note: `${filteredResults.length} results in view`,
+                    label: "Scope",
+                    value: scopeLabel,
+                    note: `${scopedRuns.length} runs currently included`,
                   },
                   {
-                    label: "Completion",
-                    value: formatPercent(completionRate),
-                    note: "successful outputs in current filter",
+                    label: "Models in view",
+                    value: leaderboard.length.toString(),
+                    note: `${filteredResults.length} filtered results`,
                   },
                   {
                     label: "Observed spend",
                     value: formatCost(totalCost),
-                    note: "estimated from provider pricing tables",
+                    note: "aggregated across the active slice",
                   },
                 ].map((metric) => (
                   <div
@@ -463,6 +950,10 @@ export function StatsDashboardClient() {
           <div className="grid gap-3 sm:grid-cols-2">
             {[
               {
+                label: "Completion",
+                value: formatPercent(completionRate),
+              },
+              {
                 label: "Avg latency",
                 value: formatDuration(avgLatencyMs),
               },
@@ -477,6 +968,10 @@ export function StatsDashboardClient() {
               {
                 label: "Tool calls",
                 value: formatTokenCount(totalToolCalls),
+              },
+              {
+                label: "Runs loaded",
+                value: formatTokenCount(scopedRuns.length),
               },
             ].map((metric) => (
               <div
@@ -497,7 +992,93 @@ export function StatsDashboardClient() {
 
       <section className="mx-auto mt-4 max-w-[1600px] px-4 sm:px-0">
         <div className="panel rise-in rounded-[2rem] p-4 sm:p-5">
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_220px_220px_220px]">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_220px_220px]">
+            <div className="rounded-[1.2rem] border border-(--line) bg-(--card) p-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Scope
+              </span>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {([
+                  { id: "all", label: "All runs" },
+                  { id: "run", label: "Single run" },
+                  { id: "range", label: "Time range" },
+                ] as const).map((option) => (
+                  <button
+                    className={cn(
+                      "rounded-[0.95rem] px-3 py-2.5 text-sm font-medium transition",
+                      scopeMode === option.id
+                        ? "bg-(--accent) text-white"
+                        : "bg-[color-mix(in_oklch,var(--foreground)_4%,transparent)] text-(--foreground) hover:bg-(--card-active)",
+                    )}
+                    key={option.id}
+                    onClick={() => setScopeMode(option.id)}
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div
+              className={cn(
+                "rounded-[1.2rem] border border-(--line) bg-(--card) p-3",
+                scopeMode === "all" && "opacity-70",
+              )}
+            >
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Scope details
+              </span>
+
+              {scopeMode === "run" ? (
+                <label className="mt-3 flex flex-col gap-2">
+                  <span className="text-xs text-(--muted)">Choose one run</span>
+                  <select
+                    className="rounded-[1rem] border border-(--line) bg-[color-mix(in_oklch,var(--foreground)_4%,transparent)] px-3 py-2.5 text-sm outline-none transition focus:border-(--accent)"
+                    onChange={(event) => setSelectedRunId(event.target.value)}
+                    value={selectedRunId}
+                  >
+                    {sortedRuns.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {formatTimestamp(run.createdAt)} · {run.id.slice(0, 8)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : scopeMode === "range" ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <label className="flex flex-col gap-2">
+                    <span className="text-xs text-(--muted)">Start date</span>
+                    <input
+                      className="rounded-[1rem] border border-(--line) bg-[color-mix(in_oklch,var(--foreground)_4%,transparent)] px-3 py-2.5 text-sm outline-none transition focus:border-(--accent)"
+                      onChange={(event) => setRangeStart(event.target.value)}
+                      type="date"
+                      value={rangeStart}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-2">
+                    <span className="text-xs text-(--muted)">End date</span>
+                    <input
+                      className="rounded-[1rem] border border-(--line) bg-[color-mix(in_oklch,var(--foreground)_4%,transparent)] px-3 py-2.5 text-sm outline-none transition focus:border-(--accent)"
+                      onChange={(event) => setRangeEnd(event.target.value)}
+                      type="date"
+                      value={rangeEnd}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-[1rem] bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)] px-3 py-3 text-sm leading-6 text-(--muted)">
+                  Aggregating across every saved run in your history.
+                </div>
+              )}
+
+              {rangeError ? (
+                <p className="mt-2 text-xs text-[color-mix(in_oklch,var(--danger)_78%,transparent)]">
+                  {rangeError}
+                </p>
+              ) : null}
+            </div>
+
             <label className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                 Search
@@ -509,6 +1090,7 @@ export function StatsDashboardClient() {
                 value={query}
               />
             </label>
+
             <label className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                 Status
@@ -527,6 +1109,9 @@ export function StatsDashboardClient() {
                 <option value="idle">Idle</option>
               </select>
             </label>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-[220px_220px_minmax(0,1fr)]">
             <label className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                 Leaderboard
@@ -547,6 +1132,7 @@ export function StatsDashboardClient() {
                 <option value="lastSeenAt">Sort by last seen</option>
               </select>
             </label>
+
             <label className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                 Result ledger
@@ -580,6 +1166,119 @@ export function StatsDashboardClient() {
                 </select>
               </div>
             </label>
+
+            <div className="rounded-[1.2rem] border border-(--line) bg-[linear-gradient(135deg,color-mix(in_oklch,var(--card)_94%,transparent),color-mix(in_oklch,var(--panel)_92%,transparent))] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Active slice
+              </p>
+              <p className="mt-1 text-sm leading-6 text-[color-mix(in_oklch,var(--foreground)_74%,transparent)]">
+                {scopeMode === "all"
+                  ? "All runs are pooled together before model-level aggregation."
+                  : scopeMode === "run"
+                    ? "One run is isolated, then every model in that run is compared side by side."
+                    : "Only runs created inside the selected date range are included in the charts and rankings."}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto mt-4 grid max-w-[1600px] gap-4 px-4 sm:px-0 xl:grid-cols-2">
+        <div className="panel rise-in rounded-[2rem] p-4 sm:p-5">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Pie summaries
+              </p>
+              <h2 className="mt-1 font-[var(--font-serif)] text-3xl tracking-[-0.04em]">
+                Share of volume and status
+              </h2>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Results by model
+              </p>
+              <p className="mt-1 text-sm text-(--muted)">
+                Top models by number of results in the current slice.
+              </p>
+              <div className="mt-4">
+                <PieChart
+                  centerLabel="Results"
+                  centerValue={formatTokenCount(filteredResults.length)}
+                  slices={modelShareSlices}
+                />
+              </div>
+            </div>
+
+            <div className="rounded-[1.6rem] border border-(--line) bg-(--card) p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Status mix
+              </p>
+              <p className="mt-1 text-sm text-(--muted)">
+                Completion, error, and in-flight composition.
+              </p>
+              <div className="mt-4">
+                <PieChart
+                  centerLabel="Completion"
+                  centerValue={formatPercent(completionRate)}
+                  slices={statusSlices}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel rise-in rounded-[2rem] p-4 sm:p-5">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Stat rankings
+              </p>
+              <h2 className="mt-1 font-[var(--font-serif)] text-3xl tracking-[-0.04em]">
+                Leaders by individual metric
+              </h2>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {rankingMetrics.map((metric) => (
+              <RankingPanel
+                entries={leaderboardBase}
+                key={metric.label}
+                metric={metric}
+                title={metric.label}
+              />
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto mt-4 max-w-[1600px] px-4 sm:px-0">
+        <div className="panel rise-in rounded-[2rem] p-4 sm:p-5">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Histograms
+              </p>
+              <h2 className="mt-1 font-[var(--font-serif)] text-3xl tracking-[-0.04em]">
+                Per-model distribution across core stats
+              </h2>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-3">
+            {histogramMetrics.map((metric) => (
+              <HistogramPanel
+                entries={leaderboardBase}
+                key={metric.key}
+                metric={metric}
+                subtitle={`${metric.label} per model in the active slice.`}
+                title={metric.label}
+              />
+            ))}
           </div>
         </div>
       </section>

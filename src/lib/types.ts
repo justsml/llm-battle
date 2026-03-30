@@ -94,6 +94,70 @@ export type ModelToolStats = {
   lastDurationMs?: number;
 };
 
+export type ModelVisualAnalysis = {
+  capturedAt?: string;
+  width?: number;
+  height?: number;
+  similarity?: number;
+  mismatchRatio?: number;
+  meanChannelDelta?: number;
+};
+
+export type ModelTraceEvent =
+  | {
+      type: "start";
+      timestamp: string;
+      agentic?: Partial<AgenticOptions>;
+    }
+  | {
+      type: "agent-step";
+      timestamp: string;
+      stepNumber?: number;
+      finishReason?: string;
+    }
+  | {
+      type: "tool-call";
+      timestamp: string;
+      toolCallId: string;
+      toolName: string;
+      input?: unknown;
+    }
+  | {
+      type: "tool-result";
+      timestamp: string;
+      toolCallId: string;
+      toolName: string;
+      output?: unknown;
+      durationMs?: number;
+    }
+  | {
+      type: "tool-error";
+      timestamp: string;
+      toolCallId: string;
+      toolName: string;
+      error: string;
+      durationMs?: number;
+    }
+  | {
+      type: "repair-start";
+      timestamp: string;
+    }
+  | {
+      type: "repair-complete";
+      timestamp: string;
+      htmlLength?: number;
+    }
+  | {
+      type: "done";
+      timestamp: string;
+      finishReason?: string;
+    }
+  | {
+      type: "error";
+      timestamp: string;
+      error: string;
+    };
+
 export type ModelExecutionStats = {
   passCount?: number;
   stepCount?: number;
@@ -104,6 +168,10 @@ export type ModelExecutionStats = {
   outputChars?: number;
   tokensPerSecond?: number;
   tools?: Record<string, ModelToolStats>;
+  visualAnalysis?: ModelVisualAnalysis;
+  trace?: {
+    events: ModelTraceEvent[];
+  };
 };
 
 export type OutputDomCssStats = {
@@ -169,6 +237,7 @@ export type SavedRun = {
   imageUrl?: string;
   imageObjectKey?: string;
   imageName: string;
+  agentic?: AgenticOptions;
   models: CompareModel[];
   results: ModelResult[];
 };

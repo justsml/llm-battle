@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -33,6 +34,7 @@ import type {
   CompareModel,
   GatewayModel,
   ModelResult,
+  ModelTraceEvent,
   OutputDomCssStats,
   OutputVoteValue,
   SavedRun,
@@ -47,6 +49,7 @@ const MAX_MODEL_CARDS = 12;
 const RECENT_MODEL_LIMIT = 24;
 const LIVE_TPS_WINDOW_MS = 2500;
 const LIVE_TPS_MIN_WINDOW_MS = 400;
+const PREVIEW_STREAM_DEBOUNCE_MS = 180;
 
 type OutputMode = "preview" | "raw" | "thinking";
 type CardSize = "s" | "m" | "l" | "xl";
@@ -85,6 +88,28 @@ type RectSnapshot = {
   height: number;
 };
 
+type PreviewScreenshot = {
+  dataUrl: string;
+  width?: number;
+  height?: number;
+  capturedAt?: string;
+};
+
+type VisualDiffState = {
+  status: "idle" | "running" | "ready" | "error";
+  requestKey?: string;
+  screenshot?: PreviewScreenshot;
+  diffDataUrl?: string;
+  heatmapDataUrl?: string;
+  similarity?: number;
+  mismatchRatio?: number;
+  meanChannelDelta?: number;
+  width?: number;
+  height?: number;
+  capturedAt?: string;
+  error?: string;
+};
+
 type ModelCardWorkspaceState = {
   activeRunId: string | null;
   selectedModels: CompareModel[];
@@ -93,6 +118,7 @@ type ModelCardWorkspaceState = {
   previewErrors: Record<string, string[]>;
   previewToolErrors: Record<string, string[]>;
   previewOverrides: Record<string, string>;
+  visualDiffs: Record<string, VisualDiffState>;
 };
 
 type BuildOffClientProps = {
@@ -101,6 +127,7 @@ type BuildOffClientProps = {
     allowLocalDevAutoAuth: boolean;
   };
   initialRunId: string | null;
+  initialAgenticEnabled?: boolean;
 };
 
 const DEFAULT_AGENTIC_OPTIONS: AgenticOptions = {
@@ -116,6 +143,38 @@ const TOOL_LABELS: Record<string, string> = {
   get_console_logs: "Console logs",
   todo_list: "Todo list",
 };
+
+const EVAL_HARNESS_LINKS: ReadonlyArray<{
+  href: string;
+  label: string;
+  meta: string;
+  matchPathnames: readonly string[];
+}> = [
+  {
+    href: "/",
+    label: "Battle",
+    meta: "New comparisons",
+    matchPathnames: ["/"],
+  },
+  {
+    href: "/run-generate",
+    label: "Generate",
+    meta: "Standard eval runs",
+    matchPathnames: ["/run-generate"],
+  },
+  {
+    href: "/run-agentic",
+    label: "Agentic",
+    meta: "Tool-using eval runs",
+    matchPathnames: ["/run-agentic"],
+  },
+  {
+    href: "/stats",
+    label: "Stats",
+    meta: "Aggregate model results",
+    matchPathnames: ["/stats"],
+  },
+];
 
 const CARD_SIZE_CONFIG: Record<
   CardSize,
@@ -255,6 +314,7 @@ function createInitialModelCardWorkspaceState(
     previewErrors: {},
     previewToolErrors: {},
     previewOverrides: {},
+    visualDiffs: {},
   };
 }
 
@@ -262,8 +322,29 @@ function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function getRunHref(runId: string) {
-  return `/runs/${encodeURIComponent(runId)}`;
+function getRunHref(runId: string, agenticEnabled: boolean) {
+  return `${getPendingRunHref(agenticEnabled)}?runId=${encodeURIComponent(runId)}`;
+}
+
+function getPendingRunHref(agenticEnabled: boolean) {
+  return agenticEnabled ? "/run-agentic" : "/run-generate";
+}
+
+function getRunIdFromLocation(
+  pathname: string,
+  searchParams: URLSearchParams,
+) {
+  const queryRunId = searchParams.get("runId");
+  if (queryRunId) return queryRunId;
+
+  const match = pathname.match(/^\/runs\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1] ?? "") : null;
+}
+
+function getRouteAgenticEnabled(pathname: string, fallback: boolean) {
+  if (pathname === "/run-agentic") return true;
+  if (pathname === "/run-generate" || pathname === "/") return false;
+  return fallback;
 }
 
 function toDataUrl(file: File) {
@@ -551,6 +632,58 @@ function getPreferredAvailableModels(
   return nextModels;
 }
 
+function getPreferredModelsForModeSwitch(
+  catalog: GatewayModel[],
+  currentModels: CompareModel[],
+  savedModels: CompareModel[],
+  recentConfigs: string[],
+  nextAgenticEnabled: boolean,
+) {
+  if (!catalog.length) {
+    return currentModels.length ? currentModels : savedModels;
+  }
+
+  const maxSelectableCards = getMaxSelectableModelCards(catalog, nextAgenticEnabled);
+  const selectableConfigs = new Set(
+    getSelectableCatalogModels(catalog, nextAgenticEnabled).map(
+      (model) => model.config,
+    ),
+  );
+
+  const retainSelectableUniqueModels = (models: CompareModel[]) =>
+    models.filter((model, index, entries) => {
+      const config = getModelConfig(model);
+      return (
+        selectableConfigs.has(config)
+        && entries.findIndex((entry) => getModelConfig(entry) === config) === index
+      );
+    });
+
+  const retainedCurrent = retainSelectableUniqueModels(currentModels);
+  const retainedSaved = retainSelectableUniqueModels(savedModels).filter(
+    (model) =>
+      !retainedCurrent.some(
+        (entry) => getModelConfig(entry) === getModelConfig(model),
+      ),
+  );
+  const desiredCount = Math.min(
+    maxSelectableCards,
+    Math.max(retainedCurrent.length, savedModels.length || currentModels.length),
+  );
+  const additions = getPreferredAvailableModels(
+    catalog,
+    [...retainedCurrent, ...retainedSaved].map((model) => getModelConfig(model)),
+    Math.max(0, desiredCount - retainedCurrent.length - retainedSaved.length),
+    recentConfigs,
+    nextAgenticEnabled,
+  ).map(toCompareModel);
+
+  return [...retainedCurrent, ...retainedSaved, ...additions].slice(
+    0,
+    desiredCount,
+  );
+}
+
 function getReleasedAtTime(model: GatewayModel) {
   if (!model.releasedAt) return Number.NEGATIVE_INFINITY;
   const timestamp = Date.parse(model.releasedAt);
@@ -682,7 +815,11 @@ function sanitizePreviewMarkup(markup: string): string {
   );
 }
 
-function createPreviewSrcDoc(markup: string, previewId: string) {
+function createPreviewSrcDoc(
+  markup: string,
+  previewId: string,
+  fitToViewport = true,
+) {
   const sanitized = sanitizePreviewMarkup(unwrapHtmlCodeFence(markup));
   markup = sanitized;
   const previewBridge = `
@@ -757,6 +894,93 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
     clone.querySelectorAll("script").forEach((node) => node.remove());
     clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
 
+    const transparentPixel =
+      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    const isExportSafeUrl = (value) => {
+      if (typeof value !== "string") return true;
+      const normalized = value.trim().toLowerCase();
+      return (
+        !normalized ||
+        normalized.startsWith("#") ||
+        normalized.startsWith("data:") ||
+        normalized.startsWith("blob:")
+      );
+    };
+    const stripUnsafeUrls = (value) =>
+      value.replace(/url\(([^)]+)\)/gi, (match, rawUrl) => {
+        const cleaned = rawUrl.trim().replace(/^['"]|['"]$/g, "");
+        return isExportSafeUrl(cleaned) ? match : "none";
+      });
+
+    clone.querySelectorAll("*").forEach((node) => {
+      if (!(node instanceof Element)) return;
+
+      const inlineStyle = node.getAttribute("style");
+      if (inlineStyle && /url\(/i.test(inlineStyle)) {
+        const sanitizedStyle = stripUnsafeUrls(inlineStyle);
+        if (sanitizedStyle.trim()) {
+          node.setAttribute("style", sanitizedStyle);
+        } else {
+          node.removeAttribute("style");
+        }
+      }
+
+      if (node instanceof HTMLImageElement) {
+        if (!isExportSafeUrl(node.currentSrc || node.src || "")) {
+          node.setAttribute("src", transparentPixel);
+          node.removeAttribute("srcset");
+          node.removeAttribute("crossorigin");
+        }
+        return;
+      }
+
+      if (
+        node instanceof HTMLAudioElement ||
+        node instanceof HTMLVideoElement
+      ) {
+        if (!isExportSafeUrl(node.currentSrc || node.src || "")) {
+          node.removeAttribute("src");
+        }
+        if (node instanceof HTMLVideoElement && !isExportSafeUrl(node.poster || "")) {
+          node.removeAttribute("poster");
+        }
+        node.removeAttribute("srcset");
+        return;
+      }
+
+      if (node instanceof HTMLSourceElement) {
+        if (!isExportSafeUrl(node.src || "")) {
+          node.remove();
+          return;
+        }
+        node.removeAttribute("srcset");
+        return;
+      }
+
+      if (node instanceof HTMLLinkElement) {
+        if (!isExportSafeUrl(node.href || "")) {
+          node.remove();
+        }
+        return;
+      }
+
+      if (
+        node instanceof HTMLIFrameElement ||
+        node instanceof HTMLEmbedElement ||
+        node instanceof HTMLObjectElement
+      ) {
+        node.remove();
+        return;
+      }
+
+      ["src", "srcset", "href", "poster"].forEach((attr) => {
+        const value = node.getAttribute(attr);
+        if (value && !isExportSafeUrl(value)) {
+          node.removeAttribute(attr);
+        }
+      });
+    });
+
     const width = Math.max(
       320,
       Math.min(
@@ -807,8 +1031,20 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
       context.fillRect(0, 0, width, height);
       context.drawImage(image, 0, 0, width, height);
 
+      let dataUrl = "";
+      try {
+        dataUrl = canvas.toDataURL("image/png");
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "SecurityError") {
+          throw new Error(
+            "Unable to capture preview because it includes external assets that the browser will not export.",
+          );
+        }
+        throw error;
+      }
+
       return {
-        dataUrl: canvas.toDataURL("image/png"),
+        dataUrl,
         width,
         height,
         capturedAt: new Date().toISOString(),
@@ -846,22 +1082,25 @@ function createPreviewSrcDoc(markup: string, previewId: string) {
   };
 
   send("clear", "");
-  window.addEventListener("load", applyViewportFit);
-  window.addEventListener("resize", applyViewportFit);
-  requestAnimationFrame(() => {
-    requestAnimationFrame(applyViewportFit);
-  });
 
-  const fitObserver = new MutationObserver(() => {
-    requestAnimationFrame(applyViewportFit);
-  });
+  if (${fitToViewport ? "true" : "false"}) {
+    window.addEventListener("load", applyViewportFit);
+    window.addEventListener("resize", applyViewportFit);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(applyViewportFit);
+    });
 
-  fitObserver.observe(document.documentElement, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    characterData: true,
-  });
+    const fitObserver = new MutationObserver(() => {
+      requestAnimationFrame(applyViewportFit);
+    });
+
+    fitObserver.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+  }
 
   window.addEventListener("error", (event) => {
     recordConsole("error", [event.message || "Runtime error while rendering preview."]);
@@ -1052,6 +1291,184 @@ function readEventDomCssStats(
   return typeof event.domCssStats === "object" && event.domCssStats
     ? (event.domCssStats as ModelResult["domCssStats"])
     : undefined;
+}
+
+function readEventTimestamp(event: Record<string, unknown>) {
+  return typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
+}
+
+function readTraceEvents(
+  value: ModelResult["stats"],
+): ModelTraceEvent[] {
+  const events = value?.trace?.events;
+  return Array.isArray(events) ? events : [];
+}
+
+function appendTraceEvent(
+  stats: ModelResult["stats"] | undefined,
+  event: ModelTraceEvent,
+): ModelResult["stats"] {
+  const existingEvents = readTraceEvents(stats);
+  const lastEvent = existingEvents.at(-1);
+  if (lastEvent && JSON.stringify(lastEvent) === JSON.stringify(event)) {
+    return stats;
+  }
+
+  return {
+    ...(stats ?? {}),
+    trace: {
+      events: [...existingEvents, event].slice(-120),
+    },
+  };
+}
+
+function formatPercent(value?: number, maximumFractionDigits = 1) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(maximumFractionDigits)}%`;
+}
+
+function formatSimilarityLabel(value?: number) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${Math.round(value * 100)} / 100`;
+}
+
+function formatMismatchLabel(value?: number) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return formatPercent(value, value <= 0.1 ? 1 : 0);
+}
+
+function hashString(value: string) {
+  let hash = 5381;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33) ^ value.charCodeAt(index);
+  }
+
+  return (hash >>> 0).toString(36);
+}
+
+function getVisualDiffRequestKey(
+  completedAt: string | undefined,
+  markup: string,
+) {
+  return `${completedAt ?? "pending"}:${markup.length}:${hashString(markup)}`;
+}
+
+function clampByte(value: number) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+async function loadImageElement(src: string) {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new window.Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to decode image."));
+    image.src = src;
+  });
+}
+
+async function buildVisualDiff(
+  referenceDataUrl: string,
+  screenshot: PreviewScreenshot,
+): Promise<VisualDiffState> {
+  const [referenceImage, previewImage] = await Promise.all([
+    loadImageElement(referenceDataUrl),
+    loadImageElement(screenshot.dataUrl),
+  ]);
+  const width = Math.max(1, Math.min(referenceImage.naturalWidth, previewImage.naturalWidth));
+  const height = Math.max(1, Math.min(referenceImage.naturalHeight, previewImage.naturalHeight));
+
+  const referenceCanvas = document.createElement("canvas");
+  referenceCanvas.width = width;
+  referenceCanvas.height = height;
+  const referenceContext = referenceCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = width;
+  previewCanvas.height = height;
+  const previewContext = previewCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  const diffCanvas = document.createElement("canvas");
+  diffCanvas.width = width;
+  diffCanvas.height = height;
+  const diffContext = diffCanvas.getContext("2d");
+
+  if (!referenceContext || !previewContext || !diffContext) {
+    throw new Error("Canvas is unavailable for visual comparison.");
+  }
+
+  referenceContext.drawImage(referenceImage, 0, 0, width, height);
+  previewContext.drawImage(previewImage, 0, 0, width, height);
+
+  const referenceData = referenceContext.getImageData(0, 0, width, height);
+  const previewData = previewContext.getImageData(0, 0, width, height);
+  const diffImage = diffContext.createImageData(width, height);
+  const pixelCount = width * height;
+  let mismatchPixels = 0;
+  let deltaTotal = 0;
+
+  for (let index = 0; index < referenceData.data.length; index += 4) {
+    const redDelta = Math.abs(referenceData.data[index] - previewData.data[index]);
+    const greenDelta = Math.abs(referenceData.data[index + 1] - previewData.data[index + 1]);
+    const blueDelta = Math.abs(referenceData.data[index + 2] - previewData.data[index + 2]);
+    const alphaDelta = Math.abs(referenceData.data[index + 3] - previewData.data[index + 3]);
+    const channelDelta = (redDelta + greenDelta + blueDelta + alphaDelta) / 4;
+    const normalizedDelta = channelDelta / 255;
+
+    deltaTotal += normalizedDelta;
+    if (normalizedDelta > 0.08) mismatchPixels += 1;
+
+    diffImage.data[index] = clampByte(redDelta * 2.8);
+    diffImage.data[index + 1] = clampByte(Math.max(0, 140 - channelDelta));
+    diffImage.data[index + 2] = clampByte(255 - blueDelta * 1.4);
+    diffImage.data[index + 3] = clampByte(Math.max(48, normalizedDelta * 255));
+  }
+
+  diffContext.putImageData(diffImage, 0, 0);
+
+  const meanChannelDelta = pixelCount ? deltaTotal / pixelCount : 0;
+  const mismatchRatio = pixelCount ? mismatchPixels / pixelCount : 0;
+  const similarity = Math.max(0, 1 - meanChannelDelta);
+
+  return {
+    status: "ready",
+    screenshot,
+    diffDataUrl: diffCanvas.toDataURL("image/png"),
+    heatmapDataUrl: diffCanvas.toDataURL("image/png"),
+    similarity,
+    mismatchRatio,
+    meanChannelDelta,
+    width,
+    height,
+    capturedAt: screenshot.capturedAt ?? new Date().toISOString(),
+  };
+}
+
+function describeTraceEvent(event: ModelTraceEvent) {
+  switch (event.type) {
+    case "start":
+      return "Started run";
+    case "agent-step":
+      return `Finished step ${event.stepNumber != null ? event.stepNumber + 1 : "?"}`;
+    case "tool-call":
+      return `Called ${getToolLabel(event.toolName)}`;
+    case "tool-result":
+      return `Received ${getToolLabel(event.toolName)} result`;
+    case "tool-error":
+      return `${getToolLabel(event.toolName)} failed`;
+    case "repair-start":
+      return "Started repair pass";
+    case "repair-complete":
+      return "Completed repair pass";
+    case "done":
+      return "Completed run";
+    case "error":
+      return "Run failed";
+    default:
+      return "Unknown event";
+  }
 }
 
 function formatStatCount(value?: number) {
@@ -1430,6 +1847,68 @@ type LiveHtmlPreviewProps = {
   interactive?: boolean;
 };
 
+type PreviewFrameProps = {
+  iframeRef?: (element: HTMLIFrameElement | null) => void;
+  interactive: boolean;
+  markup: string;
+  previewId: string;
+  title: string;
+};
+
+function PreviewFrame({
+  iframeRef,
+  interactive,
+  markup,
+  previewId,
+  title,
+}: PreviewFrameProps) {
+  return (
+    <iframe
+      className={cn(
+        "h-full w-full bg-white",
+        !interactive && "pointer-events-none",
+      )}
+      ref={iframeRef}
+      sandbox="allow-scripts"
+      srcDoc={createPreviewSrcDoc(markup, previewId, !interactive)}
+      tabIndex={interactive ? 0 : -1}
+      title={title}
+    />
+  );
+}
+
+type DebouncedStreamingPreviewFrameProps = PreviewFrameProps;
+
+function DebouncedStreamingPreviewFrame({
+  iframeRef,
+  interactive,
+  markup,
+  previewId,
+  title,
+}: DebouncedStreamingPreviewFrameProps) {
+  const [committedMarkup, setCommittedMarkup] = useState(markup);
+
+  useEffect(() => {
+    if (committedMarkup === markup) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setCommittedMarkup(markup);
+    }, PREVIEW_STREAM_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [committedMarkup, markup]);
+
+  return (
+    <PreviewFrame
+      iframeRef={iframeRef}
+      interactive={interactive}
+      markup={committedMarkup}
+      previewId={previewId}
+      title={title}
+    />
+  );
+}
+
 function LiveHtmlPreview({
   markup,
   overrideMarkup,
@@ -1441,18 +1920,26 @@ function LiveHtmlPreview({
 }: LiveHtmlPreviewProps) {
   const normalizedMarkup = unwrapHtmlCodeFence(overrideMarkup ?? markup);
   const deferredMarkup = useDeferredValue(normalizedMarkup);
-  const previewMarkup = isStreaming ? deferredMarkup : normalizedMarkup;
+
+  if (isStreaming) {
+    return (
+      <DebouncedStreamingPreviewFrame
+        key={previewId}
+        iframeRef={iframeRef}
+        interactive={interactive}
+        markup={deferredMarkup}
+        previewId={previewId}
+        title={title}
+      />
+    );
+  }
 
   return (
-    <iframe
-      className={cn(
-        "h-full w-full bg-white",
-        !interactive && "pointer-events-none",
-      )}
-      ref={iframeRef}
-      sandbox="allow-scripts"
-      srcDoc={createPreviewSrcDoc(previewMarkup, previewId)}
-      tabIndex={interactive ? 0 : -1}
+    <PreviewFrame
+      iframeRef={iframeRef}
+      interactive={interactive}
+      markup={normalizedMarkup}
+      previewId={previewId}
       title={title}
     />
   );
@@ -1530,9 +2017,154 @@ function OutputViewport({
   );
 }
 
+type VisualComparisonPanelProps = {
+  referenceImageUrl: string;
+  visualState?: VisualDiffState;
+  onRefresh?: () => void;
+  compact?: boolean;
+};
+
+function VisualComparisonPanel({
+  referenceImageUrl,
+  visualState,
+  onRefresh,
+  compact = false,
+}: VisualComparisonPanelProps) {
+  const hasAssets =
+    !!visualState?.screenshot?.dataUrl && !!visualState?.heatmapDataUrl;
+
+  return (
+    <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+            Visual match
+          </p>
+          <p className="mt-1 text-sm text-(--foreground)">
+            Similarity <strong>{formatSimilarityLabel(visualState?.similarity)}</strong>
+            {" · "}
+            Mismatch <strong>{formatMismatchLabel(visualState?.mismatchRatio)}</strong>
+          </p>
+        </div>
+        {onRefresh ? (
+          <button
+            className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active)"
+            onClick={onRefresh}
+            type="button"
+          >
+            {visualState?.status === "running" ? "Refreshing…" : "Refresh diff"}
+          </button>
+        ) : null}
+      </div>
+
+      {visualState?.status === "error" ? (
+        <p className="mt-2 text-sm text-(--danger)">{visualState.error}</p>
+      ) : null}
+
+      {hasAssets ? (
+        <div
+          className={cn(
+            "mt-3 grid gap-3",
+            compact ? "sm:grid-cols-3" : "lg:grid-cols-3",
+          )}
+        >
+          <div className="overflow-hidden rounded-[0.9rem] border border-(--line) bg-white">
+            <Image
+              alt="Reference screenshot"
+              className="h-auto w-full"
+              height={visualState?.height ?? 480}
+              src={referenceImageUrl}
+              unoptimized
+              width={visualState?.width ?? 640}
+            />
+          </div>
+          <div className="overflow-hidden rounded-[0.9rem] border border-(--line) bg-white">
+            <Image
+              alt="Generated output screenshot"
+              className="h-auto w-full"
+              height={visualState?.height ?? 480}
+              src={visualState?.screenshot?.dataUrl ?? ""}
+              unoptimized
+              width={visualState?.width ?? 640}
+            />
+          </div>
+          <div className="overflow-hidden rounded-[0.9rem] border border-(--line) bg-[#11141a]">
+            <Image
+              alt="Visual mismatch heatmap"
+              className="h-auto w-full"
+              height={visualState?.height ?? 480}
+              src={visualState?.heatmapDataUrl ?? ""}
+              unoptimized
+              width={visualState?.width ?? 640}
+            />
+          </div>
+        </div>
+      ) : visualState?.status === "running" ? (
+        <p className="mt-3 text-sm text-(--muted)">Capturing the rendered output and building a diff…</p>
+      ) : (
+        <p className="mt-3 text-sm text-(--muted)">
+          Capture a rendered screenshot to compare the output against the reference.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TraceTimeline({
+  events,
+}: {
+  events: ModelTraceEvent[];
+}) {
+  if (!events.length) {
+    return (
+      <div className="rounded-[1rem] border border-dashed border-(--line) px-3 py-4 text-sm text-(--muted)">
+        No agent trace captured yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {events.map((event, index) => (
+        <div
+          className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-3"
+          key={`${event.type}-${event.timestamp}-${index}`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-(--foreground)">
+              {describeTraceEvent(event)}
+            </p>
+            <span className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">
+              {formatTimeAgo(event.timestamp)}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-(--muted)">
+            {event.type === "tool-call" && event.input != null
+              ? JSON.stringify(event.input)
+              : event.type === "tool-result" && event.durationMs != null
+                ? `Completed in ${formatDuration(event.durationMs)}`
+                : event.type === "tool-error"
+                  ? event.error
+                  : event.type === "repair-complete" && event.htmlLength != null
+                    ? `${formatTokenCount(event.htmlLength)} chars in repaired output`
+                    : event.type === "agent-step" && event.finishReason
+                      ? event.finishReason
+                      : event.type === "done" && event.finishReason
+                        ? event.finishReason
+                        : event.type === "error"
+                          ? event.error
+                          : " "}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function BuildOffClient({
   authConfig,
   initialRunId,
+  initialAgenticEnabled = false,
 }: BuildOffClientProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -1570,6 +2202,11 @@ export function BuildOffClient({
   const [nowMs, setNowMs] = useState(0);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
   const [isHydratingRouteRun, setIsHydratingRouteRun] = useState(false);
+  const [hasBootstrappedClientState, setHasBootstrappedClientState] =
+    useState(false);
+  const [isInitialRouteRunPending, setIsInitialRouteRunPending] = useState(
+    Boolean(initialRunId),
+  );
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [isAuthActionPending, setIsAuthActionPending] = useState(false);
   const [authError, setAuthError] = useState("");
@@ -1586,9 +2223,11 @@ export function BuildOffClient({
   const [previewOverrides, setPreviewOverrides] = useState<
     Record<string, string>
   >({});
-  const [agenticOptions, setAgenticOptions] = useState<AgenticOptions>(
-    DEFAULT_AGENTIC_OPTIONS,
-  );
+  const [visualDiffs, setVisualDiffs] = useState<Record<string, VisualDiffState>>({});
+  const [agenticOptions, setAgenticOptions] = useState<AgenticOptions>(() => ({
+    ...DEFAULT_AGENTIC_OPTIONS,
+    enabled: initialAgenticEnabled,
+  }));
   const [agenticActivity, setAgenticActivity] = useState<
     Record<string, AgenticCardState>
   >({});
@@ -1599,6 +2238,7 @@ export function BuildOffClient({
     agentic: createInitialModelCardWorkspaceState(),
   }));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const referenceImageFrameRef = useRef<HTMLDivElement | null>(null);
   const siteMenuRef = useRef<HTMLDivElement>(null);
   const previewCardShellRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const previewFrameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
@@ -1633,10 +2273,15 @@ export function BuildOffClient({
   const routeRunHydratedRef = useRef<string | null>(null);
   const restoredDraftRef = useRef(false);
   const attemptedLocalDevSignInRef = useRef(false);
+  const visualDiffJobTokensRef = useRef<Record<string, string>>({});
   const pendingDraftModelConfigsByModeRef = useRef<
     Partial<Record<ModelCardModeKey, string[]>> | null
   >(null);
-  const pendingDraftModeKeyRef = useRef<ModelCardModeKey>("standard");
+  const pendingDraftModeKeyRef = useRef<ModelCardModeKey>(
+    getModelCardModeKey(
+      getRouteAgenticEnabled(pathname, initialAgenticEnabled),
+    ),
+  );
   const signedInUser = sessionData?.user ?? null;
   const signedInUserId = signedInUser?.id ?? null;
   const isAnonymousUser = Boolean(signedInUser?.isAnonymous);
@@ -1668,6 +2313,44 @@ export function BuildOffClient({
   const activePreviewToolErrors = activePreviewId
     ? previewToolErrors[activePreviewId] ?? []
     : [];
+  const activePreviewVisualDiff = activePreviewId
+    ? visualDiffs[activePreviewId]
+    : undefined;
+
+  const handleReferenceImageMouseMove = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const { currentTarget, clientX, clientY } = event;
+      const rect = currentTarget.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      const x = Math.min(
+        1,
+        Math.max(0, (clientX - rect.left) / rect.width),
+      );
+      const y = Math.min(
+        1,
+        Math.max(0, (clientY - rect.top) / rect.height),
+      );
+
+      currentTarget.style.setProperty(
+        "--reference-pan-x",
+        `${(x * 100).toFixed(2)}%`,
+      );
+      currentTarget.style.setProperty(
+        "--reference-pan-y",
+        `${(y * 100).toFixed(2)}%`,
+      );
+    },
+    [],
+  );
+
+  const resetReferenceImagePan = useCallback(() => {
+    const frame = referenceImageFrameRef.current;
+    if (!frame) return;
+
+    frame.style.setProperty("--reference-pan-x", "50%");
+    frame.style.setProperty("--reference-pan-y", "50%");
+  }, []);
 
   const closePreview = useCallback(() => {
     const currentPreviewModelId = activePreviewModelIdRef.current;
@@ -1723,6 +2406,107 @@ export function BuildOffClient({
     });
   }, []);
 
+  const refreshVisualDiff = useCallback(async (previewId: string) => {
+    if (!imageDataUrl) return;
+
+    const previewIndex = selectedModels.findIndex(
+      (entry, index) => `${entry.id}-${index}` === previewId,
+    );
+    if (previewIndex < 0) return;
+
+    const model = selectedModels[previewIndex];
+    const result = results[previewIndex];
+    const markup = unwrapHtmlCodeFence(
+      previewOverrides[model.id] ?? result?.repairedText ?? result?.text ?? "",
+    );
+    const requestKey = getVisualDiffRequestKey(result?.completedAt, markup);
+
+    const jobToken = uid();
+    visualDiffJobTokensRef.current[previewId] = jobToken;
+    setVisualDiffs((current) => ({
+      ...current,
+      [previewId]: {
+        ...(current[previewId] ?? { status: "idle" as const }),
+        requestKey,
+        status: "running",
+        error: undefined,
+      },
+    }));
+
+    try {
+      const payload = await sendPreviewCommand(previewId, "get_screenshot");
+      const screenshot =
+        typeof payload === "object" && payload && typeof (payload as { dataUrl?: unknown }).dataUrl === "string"
+          ? {
+              dataUrl: (payload as { dataUrl: string }).dataUrl,
+              width:
+                typeof (payload as { width?: unknown }).width === "number"
+                  ? (payload as { width: number }).width
+                  : undefined,
+              height:
+                typeof (payload as { height?: unknown }).height === "number"
+                  ? (payload as { height: number }).height
+                  : undefined,
+              capturedAt:
+                typeof (payload as { capturedAt?: unknown }).capturedAt === "string"
+                  ? (payload as { capturedAt: string }).capturedAt
+                  : new Date().toISOString(),
+            }
+          : null;
+
+      if (!screenshot) {
+        throw new Error("Preview did not return a screenshot.");
+      }
+
+      const visualState = await buildVisualDiff(imageDataUrl, screenshot);
+      if (visualDiffJobTokensRef.current[previewId] !== jobToken) return;
+
+      setVisualDiffs((current) => ({
+        ...current,
+        [previewId]: {
+          ...visualState,
+          requestKey,
+        },
+      }));
+
+      const modelId = model.id;
+      setResults((current) =>
+        current.map((result) =>
+          result.modelId === modelId
+            ? {
+                ...result,
+                stats: {
+                  ...(result.stats ?? {}),
+                  visualAnalysis: {
+                    similarity: visualState.similarity,
+                    mismatchRatio: visualState.mismatchRatio,
+                    meanChannelDelta: visualState.meanChannelDelta,
+                    width: visualState.width,
+                    height: visualState.height,
+                    capturedAt: visualState.capturedAt,
+                  },
+                },
+              }
+            : result,
+        ),
+      );
+    } catch (error) {
+      if (visualDiffJobTokensRef.current[previewId] !== jobToken) return;
+      setVisualDiffs((current) => ({
+        ...current,
+        [previewId]: {
+          ...(current[previewId] ?? { status: "idle" as const }),
+          requestKey,
+          status: "error",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unable to capture preview for visual diff.",
+        },
+      }));
+    }
+  }, [imageDataUrl, previewOverrides, results, selectedModels]);
+
   useEffect(() => {
     setIsClient(true);
   }, []);
@@ -1742,6 +2526,41 @@ export function BuildOffClient({
   useEffect(() => {
     previewOverridesRef.current = previewOverrides;
   }, [previewOverrides]);
+
+  useEffect(() => {
+    if (!imageDataUrl) return;
+
+    for (const [index, model] of selectedModels.entries()) {
+      const result = results[index];
+      if (!result) continue;
+
+      const previewId = `${model.id}-${index}`;
+      const visualState = visualDiffs[previewId];
+      const markup = unwrapHtmlCodeFence(
+        previewOverrides[model.id] ?? result.repairedText ?? result.text ?? "",
+      );
+      const requestKey = getVisualDiffRequestKey(result.completedAt, markup);
+      const hasRenderableMarkup = looksLikeHtml(markup);
+      const isFinalState = result.status === "done" || result.status === "error";
+      const visualIsFresh = visualState?.requestKey === requestKey;
+
+      if (
+        hasRenderableMarkup &&
+        isFinalState &&
+        visualState?.status !== "running" &&
+        !visualIsFresh
+      ) {
+        void refreshVisualDiff(previewId);
+      }
+    }
+  }, [
+    imageDataUrl,
+    previewOverrides,
+    refreshVisualDiff,
+    results,
+    selectedModels,
+    visualDiffs,
+  ]);
 
   useEffect(() => {
     if (outputMode !== "preview" && activePreviewModelId) {
@@ -1855,6 +2674,7 @@ export function BuildOffClient({
       previewErrors,
       previewToolErrors,
       previewOverrides,
+      visualDiffs,
     };
   }
 
@@ -1866,11 +2686,74 @@ export function BuildOffClient({
     setPreviewErrors(state.previewErrors);
     setPreviewToolErrors(state.previewToolErrors);
     setPreviewOverrides(state.previewOverrides);
+    setVisualDiffs(state.visualDiffs);
   }
 
-  const syncRouteToRun = useCallback((runId: string | null, replace = false) => {
-    const target = runId ? getRunHref(runId) : "/";
-    if (pathname === target) return;
+  function startBlankWorkspace(options?: {
+    agenticEnabled?: boolean;
+    syncRoute?: boolean;
+  }) {
+    const nextAgenticEnabled =
+      options?.agenticEnabled ?? agenticOptions.enabled;
+    const currentModeKey = getModelCardModeKey(agenticOptions.enabled);
+    const nextModeKey = getModelCardModeKey(nextAgenticEnabled);
+    const currentWorkspaceState = buildCurrentModelCardWorkspaceState();
+    const savedWorkspaceState = modelCardStatesByMode[nextModeKey];
+    const nextSelectedModels = getPreferredModelsForModeSwitch(
+      catalog,
+      currentWorkspaceState.selectedModels,
+      savedWorkspaceState.selectedModels,
+      recentModelConfigs,
+      nextAgenticEnabled,
+    );
+    const blankWorkspaceState: ModelCardWorkspaceState = {
+      activeRunId: null,
+      selectedModels: nextSelectedModels,
+      results: createEmptyResults(nextSelectedModels),
+      agenticActivity: {},
+      previewErrors: {},
+      previewToolErrors: {},
+      previewOverrides: {},
+      visualDiffs: {},
+    };
+
+    setModelCardStatesByMode((current) => ({
+      ...current,
+      [currentModeKey]: currentWorkspaceState,
+      [nextModeKey]: blankWorkspaceState,
+    }));
+    setAgenticOptions((current) => ({
+      ...current,
+      enabled: nextAgenticEnabled,
+    }));
+    applyModelCardWorkspaceState(blankWorkspaceState);
+    setErrorMessage("");
+    setOpenPickerIndex(null);
+    routeRunHydratedRef.current = null;
+
+    if (options?.syncRoute !== false) {
+      syncRouteToRun(null);
+    }
+  }
+
+  function syncRouteToRun(
+    runId: string | null,
+    replace = false,
+    agenticEnabled = agenticOptions.enabled,
+  ) {
+    const target = runId ? getRunHref(runId, agenticEnabled) : "/";
+    const currentPath =
+      typeof window === "undefined" ? pathname : window.location.pathname;
+    if (currentPath === target) return;
+
+    if (typeof window !== "undefined") {
+      window.history[replace ? "replaceState" : "pushState"](
+        window.history.state,
+        "",
+        target,
+      );
+      return;
+    }
 
     if (replace) {
       router.replace(target, { scroll: false });
@@ -1878,41 +2761,87 @@ export function BuildOffClient({
     }
 
     router.push(target, { scroll: false });
-  }, [pathname, router]);
+  }
 
-  const hydrateRun = useCallback((
+  function syncRouteToPendingRun(agenticEnabled: boolean, replace = false) {
+    const target = getPendingRunHref(agenticEnabled);
+    const currentPath =
+      typeof window === "undefined" ? pathname : window.location.pathname;
+    if (currentPath === target) return;
+
+    if (typeof window !== "undefined") {
+      window.history[replace ? "replaceState" : "pushState"](
+        window.history.state,
+        "",
+        target,
+      );
+      return;
+    }
+
+    if (replace) {
+      router.replace(target, { scroll: false });
+      return;
+    }
+
+    router.push(target, { scroll: false });
+  }
+
+  function hydrateRun(
     run: SavedRun,
     options?: {
       syncRoute?: boolean;
       replaceRoute?: boolean;
     },
-  ) => {
-    setActiveRunId(run.id);
+  ) {
+    const nextAgenticOptions = {
+      ...DEFAULT_AGENTIC_OPTIONS,
+      ...run.agentic,
+    };
+    const currentModeKey = getModelCardModeKey(agenticOptions.enabled);
+    const nextModeKey = getModelCardModeKey(nextAgenticOptions.enabled);
+    const currentWorkspaceState = buildCurrentModelCardWorkspaceState();
+    const nextWorkspaceState: ModelCardWorkspaceState = {
+      activeRunId: run.id,
+      selectedModels: run.models,
+      results: run.results,
+      agenticActivity: {},
+      previewErrors: {},
+      previewToolErrors: {},
+      previewOverrides: {},
+      visualDiffs: {},
+    };
+
     setPrompt(run.prompt);
     setImageDataUrl(getRunImageSrc(run));
     setImageName(run.imageName);
-    setSelectedModels(run.models);
-    setResults(run.results);
+    setModelCardStatesByMode((current) => ({
+      ...current,
+      [currentModeKey]: currentWorkspaceState,
+      [nextModeKey]: nextWorkspaceState,
+    }));
+    setAgenticOptions(nextAgenticOptions);
+    applyModelCardWorkspaceState(nextWorkspaceState);
     resetAllLiveStreamMetrics();
-    setAgenticActivity({});
-    setPreviewErrors({});
-    setPreviewToolErrors({});
-    setPreviewOverrides({});
     setErrorMessage("");
     setIsHistoryOpen(false);
 
     if (options?.syncRoute !== false) {
-      syncRouteToRun(run.id, options?.replaceRoute);
+      syncRouteToRun(
+        run.id,
+        options?.replaceRoute,
+        Boolean(nextAgenticOptions.enabled),
+      );
     }
-  }, [syncRouteToRun]);
+  }
 
-  const hydrateRouteRun = useCallback(async (runId: string) => {
+  async function hydrateRouteRun(runId: string) {
     if (!signedInUser) return;
 
     const existing = runs.find((run) => run.id === runId);
     if (existing) {
       hydrateRun(existing, { syncRoute: false });
       routeRunHydratedRef.current = runId;
+      setIsInitialRouteRunPending(false);
       return;
     }
 
@@ -1935,26 +2864,63 @@ export function BuildOffClient({
       persistRun(payload.run);
       hydrateRun(payload.run, { syncRoute: false });
       routeRunHydratedRef.current = runId;
+      setIsInitialRouteRunPending(false);
     } catch (error) {
       setRunsError(
         error instanceof Error ? error.message : "Unable to load that run.",
       );
+      setIsInitialRouteRunPending(false);
       syncRouteToRun(null, true);
     } finally {
       setIsHydratingRouteRun(false);
     }
-  }, [hydrateRun, runs, signedInUser, syncRouteToRun]);
+  }
 
   function handleToggleAgenticMode() {
     const currentModeKey = getModelCardModeKey(agenticOptions.enabled);
     const nextModeKey =
       currentModeKey === "agentic" ? "standard" : "agentic";
     const currentWorkspaceState = buildCurrentModelCardWorkspaceState();
-    const nextWorkspaceState = modelCardStatesByMode[nextModeKey];
+    const savedNextWorkspaceState = modelCardStatesByMode[nextModeKey];
+    const nextAgenticEnabled = !agenticOptions.enabled;
+    const nextSelectedModels = getPreferredModelsForModeSwitch(
+      catalog,
+      currentWorkspaceState.selectedModels,
+      savedNextWorkspaceState.selectedModels,
+      recentModelConfigs,
+      nextAgenticEnabled,
+    );
+    const nextWorkspaceState: ModelCardWorkspaceState = {
+      ...savedNextWorkspaceState,
+      selectedModels: nextSelectedModels,
+      results:
+        savedNextWorkspaceState.activeRunId
+        && savedNextWorkspaceState.selectedModels.length === nextSelectedModels.length
+        && savedNextWorkspaceState.selectedModels.every(
+          (model, index) =>
+            getModelConfig(model) === getModelConfig(nextSelectedModels[index]),
+        )
+          ? savedNextWorkspaceState.results
+          : createEmptyResults(nextSelectedModels),
+      agenticActivity:
+        savedNextWorkspaceState.activeRunId
+        && savedNextWorkspaceState.selectedModels.length === nextSelectedModels.length
+        && savedNextWorkspaceState.selectedModels.every(
+          (model, index) =>
+            getModelConfig(model) === getModelConfig(nextSelectedModels[index]),
+        )
+          ? savedNextWorkspaceState.agenticActivity
+          : {},
+      previewErrors: {},
+      previewToolErrors: {},
+      previewOverrides: {},
+      visualDiffs: {},
+    };
 
     setModelCardStatesByMode((current) => ({
       ...current,
       [currentModeKey]: currentWorkspaceState,
+      [nextModeKey]: nextWorkspaceState,
     }));
     applyModelCardWorkspaceState(nextWorkspaceState);
     setOpenPickerIndex(null);
@@ -1997,6 +2963,7 @@ export function BuildOffClient({
         if (requestedRun) {
           hydrateRun(requestedRun, { syncRoute: false });
           routeRunHydratedRef.current = initialRunId;
+          setIsInitialRouteRunPending(false);
           return;
         }
       }
@@ -2026,12 +2993,22 @@ export function BuildOffClient({
     },
   );
 
+  const hydrateRouteRunForCurrentSession = useEffectEvent((runId: string) => {
+    void hydrateRouteRun(runId);
+  });
+
   const bootstrapLocalDevSession = useEffectEvent(() => {
     void handleAnonymousSignIn();
   });
 
   useEffect(() => {
     try {
+      const routeAgenticEnabled = getRouteAgenticEnabled(
+        pathname,
+        initialAgenticEnabled,
+      );
+
+      pendingDraftModeKeyRef.current = getModelCardModeKey(routeAgenticEnabled);
       const rawDraft = window.localStorage.getItem(LOCAL_DRAFT_KEY);
       if (!rawDraft) return;
 
@@ -2091,6 +3068,7 @@ export function BuildOffClient({
         const nextAgenticOptions = {
           ...DEFAULT_AGENTIC_OPTIONS,
           ...draft.agenticOptions,
+          enabled: routeAgenticEnabled,
           maxTurns: Math.max(
             1,
             Math.min(
@@ -2103,7 +3081,7 @@ export function BuildOffClient({
           ),
         };
         pendingDraftModeKeyRef.current = getModelCardModeKey(
-          nextAgenticOptions.enabled,
+          routeAgenticEnabled,
         );
         setAgenticOptions(nextAgenticOptions);
       }
@@ -2117,8 +3095,10 @@ export function BuildOffClient({
       }
     } catch {
       // Ignore malformed local draft state.
+    } finally {
+      setHasBootstrappedClientState(true);
     }
-  }, []);
+  }, [initialAgenticEnabled, pathname]);
 
   useEffect(() => {
     if (isSessionPending) return;
@@ -2127,6 +3107,7 @@ export function BuildOffClient({
       setRuns([]);
       setRunsError("");
       setIsLoadingRuns(false);
+      setIsInitialRouteRunPending(false);
       routeRunHydratedRef.current = null;
       return;
     }
@@ -2138,13 +3119,14 @@ export function BuildOffClient({
     if (isSessionPending || !signedInUserId) return;
 
     if (!initialRunId) {
+      setIsInitialRouteRunPending(false);
       routeRunHydratedRef.current = null;
       return;
     }
 
     if (routeRunHydratedRef.current === initialRunId) return;
-    void hydrateRouteRun(initialRunId);
-  }, [hydrateRouteRun, initialRunId, isSessionPending, signedInUserId]);
+    hydrateRouteRunForCurrentSession(initialRunId);
+  }, [initialRunId, isSessionPending, signedInUserId]);
 
   useEffect(() => {
     if (!isSiteMenuOpen) return;
@@ -2173,6 +3155,39 @@ export function BuildOffClient({
   useEffect(() => {
     setIsSiteMenuOpen(false);
   }, [pathname]);
+
+  const handleHistoryPop = useEffectEvent(() => {
+      const nextPath = window.location.pathname;
+      const runId = getRunIdFromLocation(
+        nextPath,
+        new URLSearchParams(window.location.search),
+      );
+
+      if (runId) {
+        routeRunHydratedRef.current = null;
+        hydrateRouteRunForCurrentSession(runId);
+        return;
+      }
+
+      if (nextPath === "/run-agentic") {
+        startBlankWorkspace({ agenticEnabled: true, syncRoute: false });
+        return;
+      } else if (nextPath === "/run-generate") {
+        startBlankWorkspace({ agenticEnabled: false, syncRoute: false });
+        return;
+      }
+
+      startBlankWorkspace({ syncRoute: false });
+  });
+
+  useEffect(() => {
+    function handlePopState() {
+      handleHistoryPop();
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   useEffect(() => {
     if (!authConfig.allowLocalDevAutoAuth) return;
@@ -2329,6 +3344,7 @@ export function BuildOffClient({
         previewErrors,
         previewToolErrors,
         previewOverrides,
+        visualDiffs,
       };
       const selectedModelConfigsByMode: Record<ModelCardModeKey, string[]> = {
         standard:
@@ -2377,6 +3393,7 @@ export function BuildOffClient({
     previewErrors,
     previewToolErrors,
     previewOverrides,
+    visualDiffs,
   ]);
 
   useEffect(() => {
@@ -2647,6 +3664,7 @@ export function BuildOffClient({
       const dataUrl = await toDataUrl(file);
       setImageDataUrl(dataUrl);
       setImageName(file.name || "Pasted screenshot");
+      setVisualDiffs({});
       setErrorMessage("");
     };
 
@@ -2684,7 +3702,7 @@ export function BuildOffClient({
     );
     routeRunHydratedRef.current =
       routeRunHydratedRef.current === previousRunId ? nextRunId : routeRunHydratedRef.current;
-    syncRouteToRun(nextRunId, true);
+    syncRouteToRun(nextRunId, true, agenticOptions.enabled);
   }
 
   function applyVoteSummaryToResult(
@@ -3030,7 +4048,14 @@ export function BuildOffClient({
         responseId: undefined,
         usage: undefined,
         costs: undefined,
-        stats: readEventStats(event),
+        stats: appendTraceEvent(readEventStats(event), {
+          type: "start",
+          timestamp: readEventTimestamp(event),
+          agentic:
+            typeof event.agentic === "object" && event.agentic
+              ? (event.agentic as Partial<AgenticOptions>)
+              : undefined,
+        }),
         domCssStats: undefined,
       };
     }
@@ -3078,7 +4103,12 @@ export function BuildOffClient({
           typeof event.repairedText === "string"
             ? event.repairedText
             : result.repairedText,
-        stats: readEventStats(event) ?? result.stats,
+        stats: appendTraceEvent(readEventStats(event) ?? result.stats, {
+          type: "repair-complete",
+          timestamp: readEventTimestamp(event),
+          htmlLength:
+            typeof event.repairedText === "string" ? event.repairedText.length : undefined,
+        }),
       };
     }
 
@@ -3086,11 +4116,73 @@ export function BuildOffClient({
       event.type === "agent-step" ||
       event.type === "tool-call" ||
       event.type === "tool-result" ||
-      event.type === "tool-error"
+      event.type === "tool-error" ||
+      event.type === "repair-start"
     ) {
+      let traceEvent: ModelTraceEvent | null = null;
+
+      if (event.type === "agent-step") {
+        traceEvent = {
+          type: "agent-step",
+          timestamp: readEventTimestamp(event),
+          stepNumber:
+            typeof event.stepNumber === "number" ? event.stepNumber : undefined,
+          finishReason:
+            typeof event.finishReason === "string" ? event.finishReason : undefined,
+        };
+      } else if (
+        event.type === "tool-call" &&
+        typeof event.toolCallId === "string" &&
+        typeof event.toolName === "string"
+      ) {
+        traceEvent = {
+          type: "tool-call",
+          timestamp: readEventTimestamp(event),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          input: event.input,
+        };
+      } else if (
+        event.type === "tool-result" &&
+        typeof event.toolCallId === "string" &&
+        typeof event.toolName === "string"
+      ) {
+        traceEvent = {
+          type: "tool-result",
+          timestamp: readEventTimestamp(event),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          output: event.output,
+          durationMs:
+            typeof event.durationMs === "number" ? event.durationMs : undefined,
+        };
+      } else if (
+        event.type === "tool-error" &&
+        typeof event.toolCallId === "string" &&
+        typeof event.toolName === "string"
+      ) {
+        traceEvent = {
+          type: "tool-error",
+          timestamp: readEventTimestamp(event),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          error:
+            typeof event.error === "string" ? event.error : "Tool execution failed.",
+          durationMs:
+            typeof event.durationMs === "number" ? event.durationMs : undefined,
+        };
+      } else if (event.type === "repair-start") {
+        traceEvent = {
+          type: "repair-start",
+          timestamp: readEventTimestamp(event),
+        };
+      }
+
       return {
         ...result,
-        stats: readEventStats(event) ?? result.stats,
+        stats: traceEvent
+          ? appendTraceEvent(readEventStats(event) ?? result.stats, traceEvent)
+          : (readEventStats(event) ?? result.stats),
       };
     }
 
@@ -3128,7 +4220,14 @@ export function BuildOffClient({
           typeof event.costs === "object" && event.costs
             ? (event.costs as ModelResult["costs"])
             : result.costs,
-        stats: readEventStats(event) ?? result.stats,
+        stats: appendTraceEvent(readEventStats(event) ?? result.stats, {
+          type: "done",
+          timestamp: readEventTimestamp(event),
+          finishReason:
+            typeof event.finishReason === "string"
+              ? event.finishReason
+              : undefined,
+        }),
         domCssStats: readEventDomCssStats(event) ?? result.domCssStats,
       };
     }
@@ -3163,7 +4262,14 @@ export function BuildOffClient({
           typeof event.costs === "object" && event.costs
             ? (event.costs as ModelResult["costs"])
             : result.costs,
-        stats: readEventStats(event) ?? result.stats,
+        stats: appendTraceEvent(readEventStats(event) ?? result.stats, {
+          type: "error",
+          timestamp: readEventTimestamp(event),
+          error:
+            typeof event.error === "string"
+              ? event.error
+              : "Unexpected model error.",
+        }),
         domCssStats: readEventDomCssStats(event) ?? result.domCssStats,
       };
     }
@@ -3178,6 +4284,7 @@ export function BuildOffClient({
     const dataUrl = await toDataUrl(file);
     setImageDataUrl(dataUrl);
     setImageName(file.name);
+    setVisualDiffs({});
     setErrorMessage("");
   }
 
@@ -3505,6 +4612,7 @@ export function BuildOffClient({
       prompt,
       imageDataUrl,
       imageName,
+      agentic: agenticOptions,
       models: modelsForRun,
       results: baseResults,
     };
@@ -3526,12 +4634,12 @@ export function BuildOffClient({
     setPreviewErrors({});
     setPreviewToolErrors({});
     setPreviewOverrides({});
+    setVisualDiffs({});
     setErrorMessage("");
     setIsHistoryOpen(false);
     setIsRunning(true);
-    routeRunHydratedRef.current = runId;
-    syncRouteToRun(runId);
     persistRun(run);
+    syncRouteToPendingRun(agenticOptions.enabled);
 
     void (async () => {
       let persistedRunId = runId;
@@ -3762,16 +4870,7 @@ export function BuildOffClient({
   }
 
   function handleNewRun() {
-    setResults(createEmptyResults(selectedModels));
-    setErrorMessage("");
-    setAgenticActivity({});
-    setPreviewErrors({});
-    setPreviewToolErrors({});
-    setPreviewOverrides({});
-    setActiveRunId(null);
-    setOpenPickerIndex(null);
-    routeRunHydratedRef.current = null;
-    syncRouteToRun(null);
+    startBlankWorkspace();
   }
 
   const comparisonRows: Array<{
@@ -3900,7 +4999,20 @@ export function BuildOffClient({
     aggregateStatus.streamingCount +
     aggregateStatus.errorCount;
 
-  if (isSessionPending) {
+  const shouldShowInitialLoadingState =
+    isSessionPending
+    || !hasBootstrappedClientState
+    || (Boolean(initialRunId) && isInitialRouteRunPending);
+  const initialLoadingTitle =
+    initialRunId && !isSessionPending
+      ? "Loading saved run"
+      : "Preparing workspace";
+  const initialLoadingMessage =
+    initialRunId && !isSessionPending
+      ? `Restoring run ${initialRunId} before the workspace renders.`
+      : "Restoring session and local workspace state before we paint the app.";
+
+  if (shouldShowInitialLoadingState) {
     return (
       <main className="relative min-h-screen [overflow-x:clip] px-4 py-6 text-(--foreground) sm:px-6 lg:px-8">
         <div className="grain" />
@@ -3911,11 +5023,10 @@ export function BuildOffClient({
               Visual Eval Harness
             </p>
             <h1 className="mt-4 text-3xl font-semibold tracking-[-0.05em]">
-              Checking your session
+              {initialLoadingTitle}
             </h1>
             <p className="mt-3 text-sm text-(--muted)">
-              Loading Better Auth so we can restore your saved build-off
-              workspace.
+              {initialLoadingMessage}
             </p>
           </div>
         </section>
@@ -4015,10 +5126,13 @@ export function BuildOffClient({
       <div className="grain" />
 
       {/* ── Nav ──────────────────────────────────────────────────────────── */}
-      <header className="glass-shell floating-nav rise-in mx-auto flex max-w-[1600px] items-center gap-2 rounded-[3rem] px-3 py-1.5 sm:gap-3 sm:px-4">
+      <header className="glass-shell floating-nav rise-in mx-auto flex max-w-[1600px] items-center gap-2 overflow-visible rounded-[3rem] px-3 py-1.5 sm:gap-3 sm:px-4">
         {/* Brand */}
         <div
-          className="relative flex shrink-0 items-center gap-2.5 pl-1"
+          className={cn(
+            "relative flex shrink-0 items-center gap-2.5 overflow-visible pl-1",
+            isSiteMenuOpen && "z-50",
+          )}
           ref={siteMenuRef}
         >
           <h1 className="text-sm font-semibold tracking-[-0.02em]">
@@ -4049,19 +5163,29 @@ export function BuildOffClient({
           {isSiteMenuOpen ? (
             <div className="site-menu-panel" role="menu">
               <div className="site-menu-panel__section">
+                <p className="site-menu-panel__eyebrow">Navigate</p>
+                {EVAL_HARNESS_LINKS.map((item) => (
+                  <Link
+                    className={cn(
+                      "site-menu-panel__item",
+                      item.matchPathnames.includes(pathname) &&
+                        "site-menu-panel__item--active",
+                    )}
+                    href={item.href}
+                    key={item.href}
+                    onClick={() => setIsSiteMenuOpen(false)}
+                    role="menuitem"
+                  >
+                    <span className="site-menu-panel__label">{item.label}</span>
+                    <span className="site-menu-panel__meta">{item.meta}</span>
+                  </Link>
+                ))}
+              </div>
+
+              <div className="site-menu-panel__divider" />
+
+              <div className="site-menu-panel__section">
                 <p className="site-menu-panel__eyebrow">Workspace</p>
-                <Link
-                  className={cn(
-                    "site-menu-panel__item",
-                    pathname === "/" && "site-menu-panel__item--active",
-                  )}
-                  href="/"
-                  onClick={() => setIsSiteMenuOpen(false)}
-                  role="menuitem"
-                >
-                  <span className="site-menu-panel__label">Battle</span>
-                  <span className="site-menu-panel__meta">New comparisons</span>
-                </Link>
                 <button
                   className={cn(
                     "site-menu-panel__item text-left",
@@ -4083,24 +5207,6 @@ export function BuildOffClient({
                     {runs.length ? `${runs.length} saved runs` : "Recent sessions"}
                   </span>
                 </button>
-              </div>
-
-              <div className="site-menu-panel__divider" />
-
-              <div className="site-menu-panel__section">
-                <p className="site-menu-panel__eyebrow">Insights</p>
-                <Link
-                  className={cn(
-                    "site-menu-panel__item",
-                    pathname === "/stats" && "site-menu-panel__item--active",
-                  )}
-                  href="/stats"
-                  onClick={() => setIsSiteMenuOpen(false)}
-                  role="menuitem"
-                >
-                  <span className="site-menu-panel__label">Stats</span>
-                  <span className="site-menu-panel__meta">Aggregate model results</span>
-                </Link>
               </div>
             </div>
           ) : null}
@@ -4379,7 +5485,7 @@ export function BuildOffClient({
           {runs.length ? (
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {runs.map((run, index) => (
-                <Link
+                <button
                   key={run.id}
                   className={cn(
                     "w-full rounded-[1.3rem] border px-4 py-3 text-left transition hover:bg-(--card-active)",
@@ -4387,8 +5493,8 @@ export function BuildOffClient({
                       ? "border-(--foreground) bg-(--card-active)"
                       : "border-(--line)",
                   )}
-                  href={getRunHref(run.id)}
                   onClick={() => hydrateRun(run)}
+                  type="button"
                 >
                   <div className="mb-1.5 flex items-center justify-between gap-3">
                     <span className="text-xs font-semibold text-(--muted)">
@@ -4399,7 +5505,7 @@ export function BuildOffClient({
                     </span>
                   </div>
                   <p className="line-clamp-2 text-xs leading-5">{run.prompt}</p>
-                </Link>
+                </button>
               ))}
             </div>
           ) : (
@@ -4483,12 +5589,15 @@ export function BuildOffClient({
           <div className="build-card__body">
             {imageDataUrl ? (
               <div
-                className="relative w-full overflow-hidden rounded-b-[1.75rem]"
+                className="relative w-full overflow-hidden rounded-b-[1.75rem] cursor-move"
+                onMouseLeave={resetReferenceImagePan}
+                onMouseMove={handleReferenceImageMouseMove}
+                ref={referenceImageFrameRef}
                 style={{ height: cardSizeConfig.referenceHeight }}
               >
                 <Image
                   alt="Reference screenshot"
-                  className="object-cover"
+                  className="object-cover transition-[object-position] duration-150 ease-out"
                   fill
                   sizes={
                     cardSize === "xl"
@@ -4499,6 +5608,10 @@ export function BuildOffClient({
                           ? "(max-width: 768px) 100vw, 320px"
                           : "(max-width: 640px) 100vw, 240px"
                   }
+                  style={{
+                    objectPosition:
+                      "var(--reference-pan-x, 50%) var(--reference-pan-y, 50%)",
+                  }}
                   src={imageDataUrl}
                   unoptimized
                 />
@@ -4536,11 +5649,13 @@ export function BuildOffClient({
           const cardAgenticState = agenticActivity[model.id];
           const cardPreviewErrors = previewErrors[previewId] ?? [];
           const cardPreviewToolErrors = previewToolErrors[previewId] ?? [];
+          const cardVisualDiff = visualDiffs[previewId];
           const repairedMarkup = result?.repairedText ?? result?.text ?? "";
           const effectivePreviewMarkup = previewOverrides[model.id] ?? repairedMarkup;
           const displayRawMarkup = repairedMarkup;
           const thinkingOutput = result?.thinking?.trim() ?? "";
           const domCssStatItems = buildDomCssStatItems(result?.domCssStats);
+          const traceEvents = readTraceEvents(result?.stats).slice().reverse();
           const hasHtml = looksLikeHtml(
             unwrapHtmlCodeFence(effectivePreviewMarkup),
           );
@@ -4690,12 +5805,61 @@ export function BuildOffClient({
                         ),
                       )}
                     </div>
+                    <div className="mt-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                        Trace
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {traceEvents.slice(0, 3).map((traceEvent, traceIndex) => (
+                          <div
+                            className="rounded-[0.9rem] border border-(--line) bg-(--panel-strong) px-3 py-2"
+                            key={`${previewId}-trace-${traceIndex}`}
+                          >
+                            <p className="text-xs font-medium text-(--foreground)">
+                              {describeTraceEvent(traceEvent)}
+                            </p>
+                            <p className="mt-1 text-[11px] text-(--muted)">
+                              {formatTimeAgo(traceEvent.timestamp)}
+                            </p>
+                          </div>
+                        ))}
+                        {!traceEvents.length ? (
+                          <p className="text-xs text-(--muted)">
+                            Tool calls and step transitions will appear here.
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
                   </div>
                 ) : null}
 
                 {displayRawMarkup || previewOverrides[model.id] || thinkingOutput ? (
                   outputMode === "preview" ? (
                     <div className="flex flex-col gap-2 p-3">
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">Visual score</p>
+                          <p className="mt-1 text-sm font-semibold text-(--foreground)">
+                            {formatSimilarityLabel(
+                              cardVisualDiff?.similarity ?? result?.stats?.visualAnalysis?.similarity,
+                            )}
+                          </p>
+                        </div>
+                        <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">Mismatch</p>
+                          <p className="mt-1 text-sm font-semibold text-(--foreground)">
+                            {formatMismatchLabel(
+                              cardVisualDiff?.mismatchRatio ?? result?.stats?.visualAnalysis?.mismatchRatio,
+                            )}
+                          </p>
+                        </div>
+                        <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">Trace events</p>
+                          <p className="mt-1 text-sm font-semibold text-(--foreground)">
+                            {formatTokenCount(traceEvents.length)}
+                          </p>
+                        </div>
+                      </div>
                       {!hasHtml ? (
                         <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-xs text-(--muted)">
                           No HTML yet — preview appears as markup arrives.
@@ -4794,6 +5958,14 @@ export function BuildOffClient({
                             {result?.stats?.repairPassCount ? "Includes repaired output" : "Initial output"}
                           </span>
                         </div>
+                        <VisualComparisonPanel
+                          compact
+                          onRefresh={hasHtml ? () => {
+                            void refreshVisualDiff(previewId);
+                          } : undefined}
+                          referenceImageUrl={imageDataUrl}
+                          visualState={cardVisualDiff}
+                        />
                         {domCssStatItems.length ? (
                           <div className="grid gap-2 sm:grid-cols-2">
                             {domCssStatItems.map(([label, value]) => (
@@ -4826,11 +5998,13 @@ export function BuildOffClient({
                           contentStyle={cardViewportStyle}
                           title={`${result.label} thinking`}
                         >
-                          <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7 text-(--muted)">
-                            {thinkingOutput || (agenticOptions.enabled
-                              ? "No thinking trace available yet."
-                              : "Thinking traces appear when the model emits reasoning output.")}
-                          </pre>
+                          {agenticOptions.enabled ? (
+                            <TraceTimeline events={traceEvents} />
+                          ) : (
+                            <pre className="m-0 whitespace-pre-wrap break-words text-[13px] font-[450] leading-7 text-(--muted)">
+                              {thinkingOutput || "Thinking traces appear when the model emits reasoning output."}
+                            </pre>
+                          )}
                         </OutputViewport>
                       </div>
                     )
@@ -5033,7 +6207,7 @@ export function BuildOffClient({
               role="dialog"
             >
               <div
-                className="preview-modal-sheet"
+                className="preview-modal-sheet h-full"
                 onClick={(event) => event.stopPropagation()}
               >
                 <div className="preview-modal__header">
@@ -5052,7 +6226,9 @@ export function BuildOffClient({
                   </button>
                 </div>
 
-                <div className="preview-modal__body">
+                <div className="preview-modal__body flex-1">
+                  <div className="grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(22rem,0.9fr)]">
+                    <div className="flex min-h-0 flex-col gap-3">
                   {activePreviewErrors.length ? (
                     <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
                       {activePreviewErrors.map((msg, i) => (
@@ -5077,8 +6253,8 @@ export function BuildOffClient({
                       overrideMarkup={previewOverrides[activePreviewModel.id]}
                       previewId={activePreviewId}
                       title={`${activePreviewResult.label} interactive preview`}
-                    />
-                  </div>
+                      />
+                    </div>
 
                   {activePreviewToolErrors.length ? (
                     <div className="rounded-[1.1rem] border border-[color-mix(in_oklch,var(--danger)_46%,var(--line))] bg-[linear-gradient(180deg,color-mix(in_oklch,var(--panel-strong)_84%,var(--danger)_16%),color-mix(in_oklch,var(--panel)_88%,black_8%))] p-3 text-sm text-[color-mix(in_oklch,var(--foreground)_96%,white)] shadow-[0_20px_60px_color-mix(in_oklch,var(--danger)_24%,transparent)] backdrop-blur-xl">
@@ -5105,6 +6281,28 @@ export function BuildOffClient({
                       </div>
                     </div>
                   ) : null}
+                    </div>
+
+                    <div className="flex min-h-0 flex-col gap-3">
+                      <VisualComparisonPanel
+                        onRefresh={() => {
+                          void refreshVisualDiff(activePreviewId);
+                        }}
+                        referenceImageUrl={imageDataUrl}
+                        visualState={activePreviewVisualDiff}
+                      />
+                      <div className="rounded-[1rem] border border-(--line) bg-(--panel) p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                          Agent trace
+                        </p>
+                        <div className="mt-3 max-h-[34rem] overflow-auto pr-1">
+                          <TraceTimeline
+                            events={readTraceEvents(activePreviewResult.stats).slice().reverse()}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>,

@@ -6,10 +6,19 @@ import {
   shouldUseLocalDevAuthForHost,
 } from "@/lib/auth-config";
 
-export default async function HomePage() {
+type RunGeneratePageProps = {
+  searchParams?: Promise<{
+    runId?: string;
+  }>;
+};
+
+export default async function RunGeneratePage({
+  searchParams,
+}: RunGeneratePageProps) {
   const requestHeaders = await headers();
   const requestHost =
     requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host");
+  const resolvedSearchParams = await searchParams;
 
   return (
     <BuildOffClient
@@ -18,7 +27,7 @@ export default async function HomePage() {
         allowLocalDevAutoAuth: shouldUseLocalDevAuthForHost(requestHost),
       }}
       initialAgenticEnabled={false}
-      initialRunId={null}
+      initialRunId={resolvedSearchParams?.runId ?? null}
     />
   );
 }

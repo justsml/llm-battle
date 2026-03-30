@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 
 import type {
+  AgenticOptions,
   CompareModel,
   CustomModelConfig,
   ModelResult,
@@ -27,6 +28,7 @@ export async function ensureSchema() {
       image_object_key TEXT NOT NULL DEFAULT '',
       image_data_url TEXT,
       image_name TEXT NOT NULL DEFAULT '',
+      agentic JSONB,
       models JSONB NOT NULL DEFAULT '[]'::jsonb,
       results JSONB NOT NULL DEFAULT '[]'::jsonb
     )
@@ -50,6 +52,10 @@ export async function ensureSchema() {
   await sql`
     ALTER TABLE runs
     ADD COLUMN IF NOT EXISTS image_data_url TEXT
+  `;
+  await sql`
+    ALTER TABLE runs
+    ADD COLUMN IF NOT EXISTS agentic JSONB
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS run_model_results (
@@ -169,6 +175,7 @@ export async function insertRun(run: {
   imageObjectKey?: string;
   imageDataUrl?: string;
   imageName: string;
+  agentic?: AgenticOptions;
   models: CompareModel[];
   results: ModelResult[];
 }) {
@@ -184,6 +191,7 @@ export async function insertRun(run: {
       image_object_key,
       image_data_url,
       image_name,
+      agentic,
       models,
       results
     )
@@ -197,6 +205,7 @@ export async function insertRun(run: {
       ${run.imageObjectKey ?? ""},
       ${run.imageDataUrl ?? null},
       ${run.imageName},
+      ${run.agentic ? JSON.stringify(run.agentic) : null},
       ${JSON.stringify(run.models)},
       ${JSON.stringify(run.results)}
     )
@@ -315,6 +324,7 @@ export type RunRow = {
   image_object_key: string;
   image_data_url?: string | null;
   image_name: string;
+  agentic?: AgenticOptions | null;
   models: CompareModel[];
   results: ModelResult[];
 };
@@ -490,6 +500,7 @@ export async function listRuns(userId: string, limit = 20) {
       image_object_key,
       image_data_url,
       image_name,
+      agentic,
       models,
       results
     FROM runs
@@ -566,6 +577,7 @@ export async function getRun(userId: string, runId: string) {
       image_object_key,
       image_data_url,
       image_name,
+      agentic,
       models,
       results
     FROM runs

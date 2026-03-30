@@ -2,7 +2,9 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import { readDataUrlMeta } from "@/lib/utils";
 
-const BUCKET = process.env.TIGRIS_BUCKET ?? "llm-battle";
+function getBucketName() {
+  return process.env.TIGRIS_BUCKET ?? process.env.BUCKET_NAME ?? "";
+}
 
 function getS3Client() {
   return new S3Client({
@@ -17,6 +19,7 @@ function getS3Client() {
 
 export function isStorageConfigured() {
   return !!(
+    getBucketName() &&
     process.env.AWS_ACCESS_KEY_ID &&
     process.env.AWS_SECRET_ACCESS_KEY &&
     process.env.AWS_ENDPOINT_URL_S3
@@ -24,8 +27,9 @@ export function isStorageConfigured() {
 }
 
 function buildObjectUrl(key: string) {
+  const bucket = getBucketName();
   const endpoint = (process.env.AWS_ENDPOINT_URL_S3 ?? "").replace(/\/$/, "");
-  return `${endpoint}/${BUCKET}/${key}`;
+  return `${endpoint}/${bucket}/${key}`;
 }
 
 async function uploadObject(
@@ -33,11 +37,18 @@ async function uploadObject(
   body: Buffer,
   contentType: string,
 ): Promise<string> {
+  const bucket = getBucketName();
+  if (!bucket) {
+    throw new Error(
+      "Storage is not configured: set TIGRIS_BUCKET or BUCKET_NAME before uploading artifacts.",
+    );
+  }
+
   const s3 = getS3Client();
 
   await s3.send(
     new PutObjectCommand({
-      Bucket: BUCKET,
+      Bucket: bucket,
       Key: key,
       Body: body,
       ContentType: contentType,

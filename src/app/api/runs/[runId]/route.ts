@@ -43,6 +43,7 @@ export async function GET(request: Request, context: RouteContext) {
         imageUrl: row.image_url,
         imageObjectKey: row.image_object_key || undefined,
         imageName: row.image_name,
+        agentic: row.agentic || undefined,
         models: row.models,
         results: row.results,
       },

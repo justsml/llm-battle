@@ -1,10 +1,8 @@
 import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 
-import { BuildOffClient } from "@/components/build-off-client";
-import {
-  isGitHubAuthConfigured,
-  shouldUseLocalDevAuthForHost,
-} from "@/lib/auth-config";
+import { getServerSession } from "@/lib/auth";
+import { ensureSchema, getRun, isDatabaseConfigured } from "@/lib/db";
 
 type RunPageProps = {
   params: Promise<{
@@ -13,18 +11,22 @@ type RunPageProps = {
 };
 
 export default async function RunPage({ params }: RunPageProps) {
-  const requestHeaders = await headers();
-  const requestHost =
-    requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host");
   const { runId } = await params;
-
-  return (
-    <BuildOffClient
-      authConfig={{
-        githubConfigured: isGitHubAuthConfigured(),
-        allowLocalDevAutoAuth: shouldUseLocalDevAuthForHost(requestHost),
-      }}
-      initialRunId={runId}
-    />
+  const requestHeaders = await headers();
+  const session = await getServerSession(
+    new Request("http://localhost", { headers: requestHeaders }),
   );
+
+  if (!session?.user || !isDatabaseConfigured()) {
+    redirect(`/run-generate?runId=${encodeURIComponent(runId)}`);
+  }
+
+  try {
+    await ensureSchema();
+    const run = await getRun(session.user.id, runId);
+    const basePath = run?.agentic?.enabled ? "/run-agentic" : "/run-generate";
+    redirect(`${basePath}?runId=${encodeURIComponent(runId)}`);
+  } catch {
+    redirect(`/run-generate?runId=${encodeURIComponent(runId)}`);
+  }
 }

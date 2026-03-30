@@ -6,10 +6,19 @@ import {
   shouldUseLocalDevAuthForHost,
 } from "@/lib/auth-config";
 
-export default async function HomePage() {
+type RunAgenticPageProps = {
+  searchParams?: Promise<{
+    runId?: string;
+  }>;
+};
+
+export default async function RunAgenticPage({
+  searchParams,
+}: RunAgenticPageProps) {
   const requestHeaders = await headers();
   const requestHost =
     requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host");
+  const resolvedSearchParams = await searchParams;
 
   return (
     <BuildOffClient
@@ -17,8 +26,8 @@ export default async function HomePage() {
         githubConfigured: isGitHubAuthConfigured(),
         allowLocalDevAutoAuth: shouldUseLocalDevAuthForHost(requestHost),
       }}
-      initialAgenticEnabled={false}
-      initialRunId={null}
+      initialAgenticEnabled
+      initialRunId={resolvedSearchParams?.runId ?? null}
     />
   );
 }

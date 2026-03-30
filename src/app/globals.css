@@ -120,6 +120,8 @@ textarea {
   position: sticky;
   top: 1rem;
   z-index: 30;
+  overflow: visible;
+  isolation: isolate;
   will-change: backdrop-filter;
   transition:
     box-shadow 300ms cubic-bezier(0.25, 0, 0, 1),
@@ -194,7 +196,7 @@ textarea {
   backdrop-filter: blur(26px) saturate(160%);
   -webkit-backdrop-filter: blur(26px) saturate(160%);
   animation: site-menu-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  z-index: 40;
+  z-index: 60;
 }
 
 .site-menu-panel__section {
@@ -951,6 +953,7 @@ textarea {
 
 .preview-modal-sheet {
   width: min(1200px, 100%);
+  min-height: min(80vh, calc(100dvh - clamp(1.5rem, 5vw, 3rem)));
   max-height: calc(100dvh - clamp(1.5rem, 5vw, 3rem));
   display: flex;
   flex-direction: column;
@@ -1023,7 +1026,8 @@ textarea {
 }
 
 .preview-modal__viewport {
-  flex: 1;
+  display: flex;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
   border-radius: 1.4rem;
@@ -1035,8 +1039,11 @@ textarea {
 }
 
 .preview-modal__viewport iframe {
+  display: block;
+  flex: 1 1 auto;
   width: 100%;
   height: 100%;
+  min-height: 100%;
   border: 0;
 }
 

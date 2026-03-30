@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { jsonSchema, stepCountIs, streamText, tool, type ModelMessage } from "ai";
 import { z } from "zod/v4";
@@ -31,6 +33,7 @@ import type {
   ModelCostSnapshot,
   ModelExecutionStats,
   ModelResult,
+  ModelTraceEvent,
   ModelUsageSnapshot,
 } from "@/lib/types";
 import { readDataUrlMeta, sanitizeTokensPerSecond } from "@/lib/utils";
@@ -123,11 +126,64 @@ function getProviderClient(model: CompareModel) {
   };
 }
 
-function sendEvent(
+type CompareStreamController = {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  closed: boolean;
+};
+
+function createCompareStreamController(
   controller: ReadableStreamDefaultController<Uint8Array>,
+): CompareStreamController {
+  return {
+    controller,
+    closed: false,
+  };
+}
+
+function isClosedControllerError(error: unknown) {
+  return (
+    error instanceof TypeError &&
+    error.message.includes("Controller is already closed")
+  );
+}
+
+function sendEvent(
+  stream: CompareStreamController,
   payload: Record<string, unknown>,
 ) {
-  controller.enqueue(new TextEncoder().encode(`${JSON.stringify(payload)}\n`));
+  if (stream.closed) {
+    return false;
+  }
+
+  try {
+    stream.controller.enqueue(
+      new TextEncoder().encode(`${JSON.stringify(payload)}\n`),
+    );
+    return true;
+  } catch (error) {
+    if (isClosedControllerError(error)) {
+      stream.closed = true;
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+function closeStream(stream: CompareStreamController) {
+  if (stream.closed) {
+    return;
+  }
+
+  try {
+    stream.controller.close();
+  } catch (error) {
+    if (!isClosedControllerError(error)) {
+      throw error;
+    }
+  } finally {
+    stream.closed = true;
+  }
 }
 
 function buildUsageSnapshot(usage: {
@@ -201,6 +257,7 @@ type ExecutionTracker = {
   textDeltaCount: number;
   tools: Record<string, MutableToolMetric>;
   activeToolCalls: Map<string, { toolName: string; startedAtMs: number }>;
+  traceEvents: ModelTraceEvent[];
 };
 
 function createExecutionTracker(): ExecutionTracker {
@@ -213,7 +270,15 @@ function createExecutionTracker(): ExecutionTracker {
     textDeltaCount: 0,
     tools: {},
     activeToolCalls: new Map(),
+    traceEvents: [],
   };
+}
+
+function pushTraceEvent(tracker: ExecutionTracker, event: ModelTraceEvent) {
+  tracker.traceEvents.push(event);
+  if (tracker.traceEvents.length > 120) {
+    tracker.traceEvents.splice(0, tracker.traceEvents.length - 120);
+  }
 }
 
 function getMutableToolMetric(tracker: ExecutionTracker, toolName: string) {
@@ -294,12 +359,17 @@ function snapshotExecutionStats(
         ? outputTokens / (runtimeMs / 1000)
         : undefined,
     ),
+    trace: tracker.traceEvents.length
+      ? {
+          events: tracker.traceEvents,
+        }
+      : undefined,
     tools: Object.keys(tools).length ? tools : undefined,
   };
 }
 
 type StreamPassOptions = {
-  controller: ReadableStreamDefaultController<Uint8Array>;
+  controller: CompareStreamController;
   model: CompareModel;
   providerModelId: string;
   startedAtMs: number;
@@ -438,6 +508,12 @@ async function streamPass({
       : undefined,
     onStepFinish(event) {
       tracker.stepCount += 1;
+      pushTraceEvent(tracker, {
+        type: "agent-step",
+        timestamp: new Date().toISOString(),
+        stepNumber: event.stepNumber,
+        finishReason: event.finishReason,
+      });
       sendEvent(controller, {
         type: "agent-step",
         modelId: model.id,
@@ -503,6 +579,13 @@ async function streamPass({
           toolName: part.toolName,
           startedAtMs: Date.now(),
         });
+        pushTraceEvent(tracker, {
+          type: "tool-call",
+          timestamp: new Date().toISOString(),
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          input: part.input,
+        });
         sendEvent(controller, {
           type: "tool-call",
           modelId: model.id,
@@ -520,6 +603,14 @@ async function streamPass({
           part.toolName,
           false,
         );
+        pushTraceEvent(tracker, {
+          type: "tool-result",
+          timestamp: new Date().toISOString(),
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          output: part.output,
+          durationMs,
+        });
         sendEvent(controller, {
           type: "tool-result",
           modelId: model.id,
@@ -538,6 +629,19 @@ async function streamPass({
           part.toolName,
           true,
         );
+        pushTraceEvent(tracker, {
+          type: "tool-error",
+          timestamp: new Date().toISOString(),
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          error:
+            "errorText" in part && typeof part.errorText === "string"
+              ? part.errorText
+              : "error" in part
+                ? String(part.error)
+                : "Tool execution failed.",
+          durationMs,
+        });
         sendEvent(controller, {
           type: "tool-error",
           modelId: model.id,
@@ -578,7 +682,7 @@ async function streamPass({
 }
 
 async function streamModelResult(
-  controller: ReadableStreamDefaultController<Uint8Array>,
+  controller: CompareStreamController,
   model: CompareModel,
   gatewayModel: GatewayModel | undefined,
   prompt: string,
@@ -610,6 +714,17 @@ async function streamModelResult(
         : undefined,
     stats: snapshotExecutionStats(tracker),
   });
+  pushTraceEvent(tracker, {
+    type: "start",
+    timestamp: startedAtIso,
+    agentic:
+      agentic.enabled
+        ? {
+            maxTurns: agentic.maxTurns,
+            todoListTool: agentic.todoListTool,
+          }
+        : undefined,
+  });
 
   try {
     const initialPass = await streamPass({
@@ -640,6 +755,10 @@ async function streamModelResult(
 
     if (agentic.enabled && fullText.trim()) {
       tracker.repairPassCount += 1;
+      pushTraceEvent(tracker, {
+        type: "repair-start",
+        timestamp: new Date().toISOString(),
+      });
       sendEvent(controller, {
         type: "repair-start",
         modelId: model.id,
@@ -680,6 +799,11 @@ async function streamModelResult(
       });
 
       if (revisionPass.text.trim()) {
+        pushTraceEvent(tracker, {
+          type: "repair-complete",
+          timestamp: new Date().toISOString(),
+          htmlLength: revisionPass.text.length,
+        });
         sendEvent(controller, {
           type: "repair-complete",
           modelId: model.id,
@@ -699,6 +823,11 @@ async function streamModelResult(
     const completedAtIso = new Date().toISOString();
     const runtimeMs = Date.parse(completedAtIso) - startedAtMs;
     const costs = estimateModelCost(gatewayModel?.pricing ?? EMPTY_PRICING, usage ?? {});
+    pushTraceEvent(tracker, {
+      type: "done",
+      timestamp: completedAtIso,
+      finishReason,
+    });
     const stats = snapshotExecutionStats(tracker, {
       outputChars: fullText.length,
       usage,
@@ -747,6 +876,11 @@ async function streamModelResult(
     const completedAtIso = new Date().toISOString();
     const runtimeMs = Date.parse(completedAtIso) - startedAtMs;
     const costs = estimateModelCost(gatewayModel?.pricing ?? EMPTY_PRICING, usage ?? {});
+    pushTraceEvent(tracker, {
+      type: "error",
+      timestamp: completedAtIso,
+      error: message,
+    });
     const stats = snapshotExecutionStats(tracker, {
       outputChars: fullText.length,
       usage,
@@ -799,6 +933,18 @@ function looksLikeHtml(value: string) {
   return /<!doctype html|<html[\s>]|<body[\s>]|<head[\s>]|<\/?[a-z][\w:-]*(?:\s[^>]*)?>/i.test(value);
 }
 
+function createStorageSafeModelSlug(modelId: string) {
+  const normalized = modelId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  const hash = createHash("sha256").update(modelId).digest("hex").slice(0, 8);
+  const base = normalized || "model";
+  return `${base}-${hash}`;
+}
+
 function createOutputArtifactKey(
   runId: string,
   modelIndex: number,
@@ -806,7 +952,7 @@ function createOutputArtifactKey(
   output: string,
 ) {
   const extension = looksLikeHtml(output) ? "html" : "txt";
-  const modelSlug = encodeURIComponent(modelId);
+  const modelSlug = createStorageSafeModelSlug(modelId);
   return {
     key: `runs/${runId}/models/${String(modelIndex).padStart(2, "0")}-${modelSlug}/output.${extension}`,
     contentType:
@@ -846,7 +992,10 @@ async function persistModelResult(params: {
         outputContentType: artifact.contentType,
       };
     } catch (error) {
-      console.error(`Output upload failed for ${params.result.modelId}:`, error);
+      console.error(
+        `Output upload failed for ${params.result.modelId}; falling back to database-only persistence for this result:`,
+        error,
+      );
     }
   }
 
@@ -932,17 +1081,23 @@ export async function POST(request: Request) {
         .then((imageUrl) => ({
           imageUrl,
           imageObjectKey: screenshotObjectKey,
+          storageAvailable: true,
         }))
         .catch((error) => {
-          console.error("Image upload failed:", error);
+          console.error(
+            "Image upload failed; falling back to database-backed artifacts for this run:",
+            error,
+          );
           return {
             imageUrl: "",
             imageObjectKey: "",
+            storageAvailable: false,
           };
         })
     : Promise.resolve({
         imageUrl: "",
         imageObjectKey: "",
+        storageAvailable: false,
       });
 
   if (useDb) {
@@ -959,6 +1114,7 @@ export async function POST(request: Request) {
         imageObjectKey: imageArtifact.imageObjectKey,
         imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
         imageName,
+        agentic,
         models,
         results: baseResults,
       });
@@ -968,19 +1124,26 @@ export async function POST(request: Request) {
     }
   }
 
+  let streamController: CompareStreamController | undefined;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      streamController = createCompareStreamController(controller);
+
       try {
-        sendEvent(controller, {
+        sendEvent(streamController, {
           type: "ready",
           runId,
           modelIds: models.map((model) => model.id),
         });
 
+        const imageArtifact = await imageUploadPromise;
+        const useOutputStorage = useStorage && imageArtifact.storageAvailable;
+
         const finalResults = await Promise.all(
           models.map(async (model, modelIndex) => {
             const result = await streamModelResult(
-              controller,
+              streamController,
               model,
               catalogModelMap.get(parseModelConfig(model).raw),
               prompt,
@@ -993,13 +1156,12 @@ export async function POST(request: Request) {
               modelIndex,
               result,
               useDb,
-              useStorage,
+              useStorage: useOutputStorage,
             });
           }),
         );
 
         const completedAt = new Date().toISOString();
-        const imageArtifact = await imageUploadPromise;
         if (useDb) {
           try {
             await finalizeRun({
@@ -1016,7 +1178,7 @@ export async function POST(request: Request) {
           }
         }
 
-        sendEvent(controller, {
+        sendEvent(streamController, {
           type: "complete",
           runId,
           completedAt,
@@ -1045,7 +1207,7 @@ export async function POST(request: Request) {
           }
         }
 
-        sendEvent(controller, {
+        sendEvent(streamController, {
           type: "fatal",
           runId,
           error: error instanceof Error ? error.message : "Unexpected compare error.",
@@ -1054,8 +1216,16 @@ export async function POST(request: Request) {
           imageDataUrl: imageArtifact.imageUrl ? undefined : imageDataUrl,
         });
       } finally {
-        controller.close();
+        closeStream(streamController);
       }
+    },
+    cancel() {
+      // Client disconnects can race with in-flight model events.
+      // Mark the stream closed so later enqueue attempts are ignored.
+      if (streamController) {
+        streamController.closed = true;
+      }
+      return;
     },
   });
 

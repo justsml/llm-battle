@@ -74,8 +74,10 @@ AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_ENDPOINT_URL_S3=
 AWS_REGION=auto
-TIGRIS_BUCKET=llm-battle
+TIGRIS_BUCKET=
 ```
+
+If you created the bucket with `fly storage create`, Fly usually injects `BUCKET_NAME` for you. This app accepts either `TIGRIS_BUCKET` or `BUCKET_NAME`.
 
 > **GitHub OAuth callback URL:** `http://localhost:4004/api/auth/callback/github`
 
