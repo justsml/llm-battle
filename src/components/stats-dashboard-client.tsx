@@ -3,6 +3,22 @@
 import Link from "next/link";
 import { useDeferredValue, useEffect, useState } from "react";
 
+import { HistogramPanel } from "@/components/stats-dashboard/components/histogram-panel";
+import { PieChart } from "@/components/stats-dashboard/components/pie-chart";
+import { RankingPanel } from "@/components/stats-dashboard/components/ranking-panel";
+import {
+  formatPercent,
+  formatTokenCount,
+  getCollapsedModelLabel,
+  getHistogramValue,
+  getStatusTone,
+  sortAggregatesByMetric,
+  type HistogramMetricConfig,
+  type HistogramMetricKey,
+  type ModelAggregate,
+  type PieSlice,
+  type RankingMetricConfig,
+} from "@/components/stats-dashboard/lib/stats-shared";
 import type { ModelResult, SavedRun } from "@/lib/types";
 import { cn, sanitizeTokensPerSecond } from "@/lib/utils";
 
@@ -15,23 +31,6 @@ type FlattenedResult = {
   modelId: string;
   label: string;
   result: ModelResult;
-};
-
-type ModelAggregate = {
-  modelId: string;
-  label: string;
-  runs: number;
-  completed: number;
-  errored: number;
-  avgScore?: number;
-  avgLatencyMs?: number;
-  avgRuntimeMs?: number;
-  avgTotalTokens?: number;
-  avgToolCalls?: number;
-  avgTokensPerSecond?: number;
-  totalCost?: number;
-  successRate?: number;
-  lastSeenAt: string;
 };
 
 type LeaderboardSortKey =
@@ -58,36 +57,6 @@ type ResultSortKey =
   | "cost";
 
 type ScopeMode = "all" | "run" | "range";
-
-type HistogramMetricKey =
-  | "avgScore"
-  | "successRate"
-  | "avgRuntimeMs"
-  | "avgTotalTokens"
-  | "avgTokensPerSecond"
-  | "totalCost";
-
-type HistogramMetricConfig = {
-  key: HistogramMetricKey;
-  label: string;
-  accent: string;
-  preferLower: boolean;
-  formatter: (value?: number) => string;
-};
-
-type RankingMetricConfig = {
-  key: HistogramMetricKey | "avgLatencyMs";
-  label: string;
-  note: string;
-  preferLower: boolean;
-  formatter: (value?: number) => string;
-};
-
-type PieSlice = {
-  label: string;
-  value: number;
-  color: string;
-};
 
 const STATUS_COLORS: Record<ModelResult["status"], string> = {
   done: "#0f8a62",
@@ -168,11 +137,6 @@ function formatDuration(ms?: number) {
   return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
 }
 
-function formatTokenCount(value?: number) {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat().format(value);
-}
-
 function formatCost(value?: number) {
   if (value == null || !Number.isFinite(value)) return "—";
   if (value === 0) return "$0.000000";
@@ -183,11 +147,6 @@ function formatCost(value?: number) {
     minimumFractionDigits: 4,
     maximumFractionDigits: 6,
   }).format(value);
-}
-
-function formatPercent(value?: number) {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${value.toFixed(value >= 99 || value <= 1 ? 0 : 1)}%`;
 }
 
 function formatTokensPerSecond(value?: number) {
@@ -203,27 +162,6 @@ function formatVoteScore(score?: number) {
   if (score == null || !Number.isFinite(score)) return "—";
   if (score > 0) return `+${score.toFixed(score % 1 === 0 ? 0 : 1)}`;
   return score.toFixed(score % 1 === 0 ? 0 : 1);
-}
-
-function getStatusTone(status: ModelResult["status"]) {
-  if (status === "done") {
-    return "border-[color-mix(in_oklch,var(--success)_35%,transparent)] bg-[color-mix(in_oklch,var(--success)_16%,transparent)] text-(--foreground)";
-  }
-
-  if (status === "error") {
-    return "border-[color-mix(in_oklch,var(--danger)_35%,transparent)] bg-[color-mix(in_oklch,var(--danger)_16%,transparent)] text-(--foreground)";
-  }
-
-  if (status === "streaming") {
-    return "border-[color-mix(in_oklch,var(--accent)_35%,transparent)] bg-[color-mix(in_oklch,var(--accent)_16%,transparent)] text-(--foreground)";
-  }
-
-  return "border-(--line) bg-(--card) text-(--muted)";
-}
-
-function getCollapsedModelLabel(modelId: string) {
-  const simplified = modelId.split("/").filter(Boolean).at(-1);
-  return simplified ?? modelId;
 }
 
 function getResultSortValue(entry: FlattenedResult, key: ResultSortKey) {
@@ -279,27 +217,6 @@ function normalizeDateRange(start: string, end: string) {
   };
 }
 
-function getHistogramValue(entry: ModelAggregate, key: HistogramMetricKey | "avgLatencyMs") {
-  return entry[key];
-}
-
-function sortAggregatesByMetric(
-  entries: ModelAggregate[],
-  key: HistogramMetricKey | "avgLatencyMs",
-  preferLower: boolean,
-) {
-  return [...entries].sort((left, right) => {
-    const leftValue = getHistogramValue(left, key);
-    const rightValue = getHistogramValue(right, key);
-
-    if (leftValue == null && rightValue == null) return 0;
-    if (leftValue == null) return 1;
-    if (rightValue == null) return -1;
-
-    return preferLower ? leftValue - rightValue : rightValue - leftValue;
-  });
-}
-
 function buildModelShareSlices(entries: ModelAggregate[]) {
   const ranked = [...entries].sort((left, right) => right.runs - left.runs);
   const top = ranked.slice(0, 5).map((entry, index) => ({
@@ -334,214 +251,6 @@ function buildStatusSlices(entries: FlattenedResult[]) {
       color: STATUS_COLORS[status],
     }))
     .filter((slice) => slice.value > 0);
-}
-
-function PieChart({
-  slices,
-  centerLabel,
-  centerValue,
-}: {
-  slices: PieSlice[];
-  centerLabel: string;
-  centerValue: string;
-}) {
-  const total = slices.reduce((sum, slice) => sum + slice.value, 0);
-  const radius = 44;
-  const circumference = 2 * Math.PI * radius;
-  const chartSlices = slices.map((slice, index) => {
-    const segmentLength = total ? (slice.value / total) * circumference : 0;
-    const segmentOffset = slices
-      .slice(0, index)
-      .reduce((sum, previous) => sum + (total ? (previous.value / total) * circumference : 0), 0);
-
-    return {
-      ...slice,
-      segmentLength,
-      segmentOffset,
-    };
-  });
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-[140px_minmax(0,1fr)] lg:items-center">
-      <div className="relative mx-auto h-36 w-36">
-        <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
-          <circle
-            cx="60"
-            cy="60"
-            fill="none"
-            r={radius}
-            stroke="color-mix(in oklch, var(--foreground) 8%, transparent)"
-            strokeWidth="18"
-          />
-          {chartSlices.map((slice) => (
-            <circle
-              cx="60"
-              cy="60"
-              fill="none"
-              key={slice.label}
-              r={radius}
-              stroke={slice.color}
-              strokeDasharray={`${slice.segmentLength} ${circumference - slice.segmentLength}`}
-              strokeDashoffset={-slice.segmentOffset}
-              strokeLinecap="butt"
-              strokeWidth="18"
-            />
-          ))}
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-          <span className="text-[10px] uppercase tracking-[0.18em] text-(--muted)">
-            {centerLabel}
-          </span>
-          <span className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
-            {centerValue}
-          </span>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        {slices.length ? (
-          slices.map((slice) => {
-            const share = total ? (slice.value / total) * 100 : 0;
-            return (
-              <div
-                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)] px-3 py-2.5"
-                key={slice.label}
-              >
-                <span
-                  className="h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: slice.color }}
-                />
-                <span className="truncate text-sm font-medium capitalize">{slice.label}</span>
-                <span className="text-xs text-(--muted)">
-                  {formatPercent(share)} · {formatTokenCount(slice.value)}
-                </span>
-              </div>
-            );
-          })
-        ) : (
-          <div className="rounded-[1rem] border border-dashed border-(--line) px-4 py-6 text-sm text-(--muted)">
-            No slices to chart yet.
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function HistogramPanel({
-  title,
-  subtitle,
-  entries,
-  metric,
-}: {
-  title: string;
-  subtitle: string;
-  entries: ModelAggregate[];
-  metric: HistogramMetricConfig;
-}) {
-  const ranked = sortAggregatesByMetric(entries, metric.key, metric.preferLower)
-    .filter((entry) => getHistogramValue(entry, metric.key) != null)
-    .slice(0, 6);
-  const maxValue = ranked.reduce((max, entry) => {
-    const value = getHistogramValue(entry, metric.key) ?? 0;
-    return Math.max(max, value);
-  }, 0);
-
-  return (
-    <div className="rounded-[1.6rem] border border-(--line) bg-[linear-gradient(180deg,color-mix(in_oklch,var(--panel)_94%,transparent),color-mix(in_oklch,var(--card)_94%,transparent))] p-4">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-        {title}
-      </p>
-      <p className="mt-1 text-sm text-[color-mix(in_oklch,var(--foreground)_72%,transparent)]">
-        {subtitle}
-      </p>
-
-      <div className="mt-4 space-y-3">
-        {ranked.length ? (
-          ranked.map((entry, index) => {
-            const value = getHistogramValue(entry, metric.key);
-            const width = maxValue > 0 && value != null ? Math.max((value / maxValue) * 100, 8) : 0;
-
-            return (
-              <div key={`${metric.key}:${entry.modelId}`}>
-                <div className="mb-1.5 flex items-baseline justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold">
-                      {index + 1}. {getCollapsedModelLabel(entry.modelId)}
-                    </p>
-                    <p className="truncate text-[11px] text-(--muted)">{entry.modelId}</p>
-                  </div>
-                  <span className="shrink-0 text-sm font-medium">{metric.formatter(value)}</span>
-                </div>
-                <div className="h-2.5 rounded-full bg-[color-mix(in_oklch,var(--foreground)_7%,transparent)]">
-                  <div
-                    className="h-full rounded-full transition-[width]"
-                    style={{
-                      width: `${width}%`,
-                      background: `linear-gradient(90deg, ${metric.accent}, color-mix(in srgb, ${metric.accent} 55%, white))`,
-                    }}
-                  />
-                </div>
-              </div>
-            );
-          })
-        ) : (
-          <div className="rounded-[1rem] border border-dashed border-(--line) px-4 py-6 text-sm text-(--muted)">
-            No model aggregates available for this metric.
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RankingPanel({
-  title,
-  entries,
-  metric,
-}: {
-  title: string;
-  entries: ModelAggregate[];
-  metric: RankingMetricConfig;
-}) {
-  const ranked = sortAggregatesByMetric(entries, metric.key, metric.preferLower)
-    .filter((entry) => getHistogramValue(entry, metric.key) != null)
-    .slice(0, 5);
-
-  return (
-    <div className="rounded-[1.5rem] border border-(--line) bg-(--card) p-4">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-        {title}
-      </p>
-      <p className="mt-1 text-xs leading-5 text-(--muted)">{metric.note}</p>
-
-      <div className="mt-4 space-y-2">
-        {ranked.length ? (
-          ranked.map((entry, index) => (
-            <div
-              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[1rem] bg-[color-mix(in_oklch,var(--foreground)_3%,transparent)] px-3 py-2.5"
-              key={`${metric.key}:${entry.modelId}`}
-            >
-              <span className="text-sm font-semibold text-(--muted)">{index + 1}</span>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">
-                  {getCollapsedModelLabel(entry.modelId)}
-                </p>
-                <p className="truncate text-[11px] text-(--muted)">{entry.modelId}</p>
-              </div>
-              <span className="text-sm font-medium">
-                {metric.formatter(getHistogramValue(entry, metric.key))}
-              </span>
-            </div>
-          ))
-        ) : (
-          <div className="rounded-[1rem] border border-dashed border-(--line) px-4 py-6 text-sm text-(--muted)">
-            Not enough data in the current filter.
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }
 
 export function StatsDashboardClient() {
