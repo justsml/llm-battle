@@ -17,6 +17,27 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { HostModelExplorerModal } from "@/components/battle/components/host-model-explorer-modal";
+import { OutputViewport } from "@/components/battle/components/output-viewport";
+import { RevisionNavigator } from "@/components/battle/components/revision-navigator";
+import { TraceTimeline } from "@/components/battle/components/trace-timeline";
+import { VisualComparisonPanel } from "@/components/battle/components/visual-comparison-panel";
+import {
+  describeTraceEvent,
+  formatDuration,
+  formatMismatchLabel,
+  formatMonthYear,
+  formatOutputRevisionMeta,
+  formatSimilarityLabel,
+  formatTimeAgo,
+  formatTokenCount,
+  getCollapsedModelLabel,
+  getModelPricingSummary,
+  type ModelSortMode,
+  type PreviewScreenshot,
+  type RemoteHostModelEntry,
+  type VisualDiffState,
+} from "@/components/battle/lib/view-shared";
 import { authClient } from "@/lib/auth-client";
 import { estimateModelCost } from "@/lib/gateway-models";
 import {
@@ -56,18 +77,11 @@ const PREVIEW_STREAM_DEBOUNCE_MS = 180;
 type OutputMode = "preview" | "raw" | "thinking";
 type CardSize = "s" | "m" | "l" | "xl";
 type ModelCardModeKey = "standard" | "agentic";
-type ModelSortMode = "released" | "name" | "provider";
 
 type PreviewConsoleEntry = {
   level: string;
   message: string;
   timestamp: string;
-};
-
-type RemoteHostModelEntry = {
-  id: string;
-  ownedBy: string;
-  object: string;
 };
 
 type AgenticToolState = {
@@ -94,28 +108,6 @@ type RectSnapshot = {
   top: number;
   width: number;
   height: number;
-};
-
-type PreviewScreenshot = {
-  dataUrl: string;
-  width?: number;
-  height?: number;
-  capturedAt?: string;
-};
-
-type VisualDiffState = {
-  status: "idle" | "running" | "ready" | "error";
-  requestKey?: string;
-  screenshot?: PreviewScreenshot;
-  diffDataUrl?: string;
-  heatmapDataUrl?: string;
-  similarity?: number;
-  mismatchRatio?: number;
-  meanChannelDelta?: number;
-  width?: number;
-  height?: number;
-  capturedAt?: string;
-  error?: string;
 };
 
 type ModelCardWorkspaceState = {
@@ -489,54 +481,6 @@ function formatTimestamp(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
-}
-
-function formatMonthYear(value?: string) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    year: "numeric",
-  }).format(new Date(value));
-}
-
-function formatTimeAgo(value?: string) {
-  if (!value) return "—";
-
-  const date = new Date(value);
-  const timestamp = date.getTime();
-  if (Number.isNaN(timestamp)) return "—";
-
-  const diffMs = timestamp - Date.now();
-  const diffSeconds = Math.round(diffMs / 1000);
-  const relativeFormatter = new Intl.RelativeTimeFormat(undefined, {
-    numeric: "auto",
-  });
-
-  const ranges = [
-    { unit: "year", seconds: 60 * 60 * 24 * 365 },
-    { unit: "month", seconds: 60 * 60 * 24 * 30 },
-    { unit: "week", seconds: 60 * 60 * 24 * 7 },
-    { unit: "day", seconds: 60 * 60 * 24 },
-    { unit: "hour", seconds: 60 * 60 },
-    { unit: "minute", seconds: 60 },
-  ] as const;
-
-  for (const range of ranges) {
-    if (Math.abs(diffSeconds) >= range.seconds) {
-      return relativeFormatter.format(
-        Math.round(diffSeconds / range.seconds),
-        range.unit,
-      );
-    }
-  }
-
-  return relativeFormatter.format(diffSeconds, "second");
-}
-
-function getCollapsedModelLabel(model: Pick<GatewayModel, "id"> | string) {
-  const label = getModelLabel(typeof model === "string" ? model : model.id);
-  const simplified = label.split("/").filter(Boolean).at(-1);
-  return simplified ?? label;
 }
 
 function formatVoteScore(score: number) {
@@ -1456,23 +1400,12 @@ function createPreviewSrcDoc(
   return `<!DOCTYPE html><html><head>${previewBase}${previewBridge}</head><body>${markup}</body></html>`;
 }
 
-function formatDuration(ms?: number) {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
-}
-
 function liveElapsed(result: ModelResult, nowMs: number): number | undefined {
   if (result.runtimeMs != null) return result.runtimeMs;
   if (result.startedAt && result.status === "streaming") {
     return Math.max(0, nowMs - Date.parse(result.startedAt));
   }
   return result.runtimeMs;
-}
-
-function formatTokenCount(value?: number) {
-  if (value == null) return "—";
-  return new Intl.NumberFormat().format(value);
 }
 
 function formatLiveTokenCount(value: number | undefined, estimated = false) {
@@ -1505,26 +1438,6 @@ function formatTokensPerSecond(value?: number) {
 function sumDefinedNumber(current: number | undefined, next: number | undefined) {
   if (next == null) return current;
   return (current ?? 0) + next;
-}
-
-function formatRatePerMillion(value?: number) {
-  if (value == null) return "—";
-
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: value * 1_000_000 >= 1 ? 2 : 4,
-    maximumFractionDigits: value * 1_000_000 >= 1 ? 2 : 4,
-  }).format(value * 1_000_000);
-}
-
-function getModelPricingSummary(model: GatewayModel) {
-  const parts = [
-    model.pricing.input != null ? `In ${formatRatePerMillion(model.pricing.input)}/M` : null,
-    model.pricing.output != null ? `Out ${formatRatePerMillion(model.pricing.output)}/M` : null,
-  ].filter((value): value is string => value != null);
-
-  return parts.length ? parts.join(" • ") : "Pricing unavailable";
 }
 
 function formatResultStatus(result: ModelResult) {
@@ -1579,21 +1492,6 @@ function appendTraceEvent(
       events: [...existingEvents, event].slice(-120),
     },
   };
-}
-
-function formatPercent(value?: number, maximumFractionDigits = 1) {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${(value * 100).toFixed(maximumFractionDigits)}%`;
-}
-
-function formatSimilarityLabel(value?: number) {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${Math.round(value * 100)} / 100`;
-}
-
-function formatMismatchLabel(value?: number) {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return formatPercent(value, value <= 0.1 ? 1 : 0);
 }
 
 function hashString(value: string) {
@@ -1703,36 +1601,6 @@ async function buildVisualDiff(
     height,
     capturedAt: screenshot.capturedAt ?? new Date().toISOString(),
   };
-}
-
-function describeTraceEvent(event: ModelTraceEvent) {
-  switch (event.type) {
-    case "start":
-      return "Started run";
-    case "agent-step":
-      return `Finished step ${event.stepNumber != null ? event.stepNumber + 1 : "?"}`;
-    case "tool-call":
-      return `Called ${getToolLabel(event.toolName)}`;
-    case "tool-result":
-      return `Received ${getToolLabel(event.toolName)} result`;
-    case "tool-error":
-      return `${getToolLabel(event.toolName)} failed`;
-    case "repair-start":
-      return "Started repair pass";
-    case "repair-complete":
-      return "Completed repair pass";
-    case "done":
-      return "Completed run";
-    case "error":
-      return "Run failed";
-    default:
-      return "Unknown event";
-  }
-}
-
-function formatOutputRevisionMeta(revision: ModelOutputRevision, index: number, total: number) {
-  const step = `Revision ${index + 1} of ${total}`;
-  return `${step} · ${revision.label}`;
 }
 
 function formatStatCount(value?: number) {
@@ -2222,498 +2090,6 @@ function LiveHtmlPreview({
       previewId={previewId}
       title={title}
     />
-  );
-}
-
-type OutputViewportProps = {
-  title: string;
-  children: ReactNode;
-  className?: string;
-  contentClassName?: string;
-  contentStyle?: CSSProperties;
-};
-
-function OutputViewport({
-  title,
-  children,
-  className,
-  contentClassName,
-  contentStyle,
-}: OutputViewportProps) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-
-  useEffect(() => {
-    function handleFullscreenChange() {
-      setIsFullscreen(document.fullscreenElement === viewportRef.current);
-    }
-
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    handleFullscreenChange();
-
-    return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-    };
-  }, []);
-
-  async function toggleFullscreen() {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-
-    if (document.fullscreenElement === viewport) {
-      await document.exitFullscreen();
-      return;
-    }
-
-    await viewport.requestFullscreen();
-  }
-
-  return (
-    <div
-      className={cn("output-viewport relative", className)}
-      ref={viewportRef}
-    >
-      <button
-        aria-label={`${isFullscreen ? "Exit" : "Open"} ${title} full screen`}
-        className="output-viewport__action absolute right-3 top-3 z-10 rounded-full border border-(--line) bg-(--card) px-3 py-1.5 text-xs font-medium text-(--foreground) shadow-[0_10px_30px_color-mix(in_oklch,var(--foreground)_12%,transparent)] transition hover:bg-(--card-active)"
-        onClick={() => {
-          void toggleFullscreen();
-        }}
-        type="button"
-      >
-        {isFullscreen ? "Exit full screen" : "Full screen"}
-      </button>
-
-      <div
-        className={cn(
-          "output-viewport__content",
-          contentClassName,
-        )}
-        style={contentStyle}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-type VisualComparisonPanelProps = {
-  referenceImageUrl: string;
-  visualState?: VisualDiffState;
-  onRefresh?: () => void;
-  compact?: boolean;
-};
-
-function VisualComparisonPanel({
-  referenceImageUrl,
-  visualState,
-  onRefresh,
-  compact = false,
-}: VisualComparisonPanelProps) {
-  const hasAssets =
-    !!visualState?.screenshot?.dataUrl && !!visualState?.heatmapDataUrl;
-
-  return (
-    <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Visual match
-          </p>
-          <p className="mt-1 text-sm text-(--foreground)">
-            Similarity <strong>{formatSimilarityLabel(visualState?.similarity)}</strong>
-            {" · "}
-            Mismatch <strong>{formatMismatchLabel(visualState?.mismatchRatio)}</strong>
-          </p>
-        </div>
-        {onRefresh ? (
-          <button
-            className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active)"
-            onClick={onRefresh}
-            type="button"
-          >
-            {visualState?.status === "running" ? "Refreshing…" : "Refresh diff"}
-          </button>
-        ) : null}
-      </div>
-
-      {visualState?.status === "error" ? (
-        <p className="mt-2 text-sm text-(--danger)">{visualState.error}</p>
-      ) : null}
-
-      {hasAssets ? (
-        <div
-          className={cn(
-            "mt-3 grid gap-3",
-            compact ? "sm:grid-cols-3" : "lg:grid-cols-3",
-          )}
-        >
-          <div className="overflow-hidden rounded-[0.9rem] border border-(--line) bg-white">
-            <Image
-              alt="Reference screenshot"
-              className="h-auto w-full"
-              height={visualState?.height ?? 480}
-              src={referenceImageUrl}
-              unoptimized
-              width={visualState?.width ?? 640}
-            />
-          </div>
-          <div className="overflow-hidden rounded-[0.9rem] border border-(--line) bg-white">
-            <Image
-              alt="Generated output screenshot"
-              className="h-auto w-full"
-              height={visualState?.height ?? 480}
-              src={visualState?.screenshot?.dataUrl ?? ""}
-              unoptimized
-              width={visualState?.width ?? 640}
-            />
-          </div>
-          <div className="overflow-hidden rounded-[0.9rem] border border-(--line) bg-[#11141a]">
-            <Image
-              alt="Visual mismatch heatmap"
-              className="h-auto w-full"
-              height={visualState?.height ?? 480}
-              src={visualState?.heatmapDataUrl ?? ""}
-              unoptimized
-              width={visualState?.width ?? 640}
-            />
-          </div>
-        </div>
-      ) : visualState?.status === "running" ? (
-        <p className="mt-3 text-sm text-(--muted)">Capturing the rendered output and building a diff…</p>
-      ) : (
-        <p className="mt-3 text-sm text-(--muted)">
-          Capture a rendered screenshot to compare the output against the reference.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function RevisionNavigator({
-  revisions,
-  selectedIndex,
-  onSelect,
-  compact = false,
-}: {
-  revisions: ModelOutputRevision[];
-  selectedIndex: number;
-  onSelect: (revisionId: string) => void;
-  compact?: boolean;
-}) {
-  if (!revisions.length) {
-    return null;
-  }
-
-  const selectedRevision = revisions[selectedIndex] ?? revisions.at(-1) ?? null;
-  const disablePrevious = selectedIndex <= 0;
-  const disableNext = selectedIndex >= revisions.length - 1;
-
-  return (
-    <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            HTML revisions
-          </p>
-          {selectedRevision ? (
-            <p className="mt-1 text-sm text-(--foreground)">
-              {formatOutputRevisionMeta(selectedRevision, selectedIndex, revisions.length)}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={disablePrevious}
-            onClick={() => onSelect(revisions[Math.max(0, selectedIndex - 1)].id)}
-            type="button"
-          >
-            Prev
-          </button>
-          <button
-            className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={disableNext}
-            onClick={() => onSelect(revisions[Math.min(revisions.length - 1, selectedIndex + 1)].id)}
-            type="button"
-          >
-            Next
-          </button>
-        </div>
-      </div>
-      {!compact ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {revisions.map((revision, index) => (
-            <button
-              className={cn(
-                "rounded-full border px-3 py-1 text-xs font-medium transition",
-                index === selectedIndex
-                  ? "border-(--foreground) bg-(--card-active) text-(--foreground)"
-                  : "border-(--line) text-(--muted) hover:bg-(--card-active)",
-              )}
-              key={revision.id}
-              onClick={() => onSelect(revision.id)}
-              type="button"
-            >
-              {index + 1}. {revision.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-type HostModelExplorerModalProps = {
-  apiKey: string;
-  error: string;
-  hostUrl: string;
-  isLoading: boolean;
-  isOpen: boolean;
-  isSaving: boolean;
-  models: RemoteHostModelEntry[];
-  onApiKeyChange: (value: string) => void;
-  onClose: () => void;
-  onHostUrlChange: (value: string) => void;
-  onImport: (model: RemoteHostModelEntry) => void;
-  onLoadModels: () => void;
-  onSupportsImageInputChange: (value: boolean) => void;
-  resolvedBaseUrl: string;
-  selectedModelId: string;
-  setSelectedModelId: (value: string) => void;
-  supportsImageInput: boolean;
-};
-
-function HostModelExplorerModal({
-  apiKey,
-  error,
-  hostUrl,
-  isLoading,
-  isOpen,
-  isSaving,
-  models,
-  onApiKeyChange,
-  onClose,
-  onHostUrlChange,
-  onImport,
-  onLoadModels,
-  onSupportsImageInputChange,
-  resolvedBaseUrl,
-  selectedModelId,
-  setSelectedModelId,
-  supportsImageInput,
-}: HostModelExplorerModalProps) {
-  if (!isOpen) return null;
-
-  const selectedModel =
-    models.find((model) => model.id === selectedModelId) ?? models[0] ?? null;
-
-  return createPortal(
-    <div
-      aria-modal="true"
-      className="preview-modal-backdrop"
-      onClick={onClose}
-      role="dialog"
-    >
-      <div
-        className="preview-modal-sheet max-w-4xl"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="preview-modal__header">
-          <div>
-            <p className="preview-modal__eyebrow">Model explorer</p>
-            <h2 className="preview-modal__title">Add OpenAI-compatible host models</h2>
-          </div>
-          <button
-            className="preview-modal__close"
-            onClick={onClose}
-            type="button"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="preview-modal__body space-y-4">
-          <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-4">
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem_auto]">
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                  Models URL
-                </span>
-                <input
-                  className="rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 outline-none transition focus:border-(--foreground)"
-                  onChange={(event) => onHostUrlChange(event.target.value)}
-                  placeholder="http://192.168.50.173:1234/v1/models"
-                  value={hostUrl}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                  API key
-                </span>
-                <input
-                  className="rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 outline-none transition focus:border-(--foreground)"
-                  onChange={(event) => onApiKeyChange(event.target.value)}
-                  placeholder="Optional"
-                  type="password"
-                  value={apiKey}
-                />
-              </label>
-              <div className="flex items-end">
-                <button
-                  className="rounded-[0.9rem] border border-(--line) bg-(--card) px-4 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isLoading || !hostUrl.trim()}
-                  onClick={onLoadModels}
-                  type="button"
-                >
-                  {isLoading ? "Loading…" : "Load models"}
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-sm text-(--foreground)">
-                <input
-                  checked={supportsImageInput}
-                  onChange={(event) => onSupportsImageInputChange(event.target.checked)}
-                  type="checkbox"
-                />
-                Imported model supports image input
-              </label>
-              {resolvedBaseUrl ? (
-                <span className="text-xs text-(--muted)">
-                  Base URL: {resolvedBaseUrl}
-                </span>
-              ) : null}
-            </div>
-
-            {error ? (
-              <p className="mt-3 rounded-[0.9rem] border border-[color-mix(in_oklch,var(--danger)_36%,transparent)] bg-[color-mix(in_oklch,var(--danger)_12%,transparent)] px-3 py-2 text-sm text-(--danger)">
-                {error}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(18rem,0.9fr)]">
-            <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-2">
-              <div className="max-h-[24rem] overflow-auto">
-                {models.length ? (
-                  <div className="space-y-2">
-                    {models.map((model) => (
-                      <button
-                        className={cn(
-                          "w-full rounded-[1rem] border px-3 py-3 text-left transition",
-                          selectedModelId === model.id
-                            ? "border-(--foreground) bg-(--card-active)"
-                            : "border-(--line) bg-(--card) hover:bg-(--card-active)",
-                        )}
-                        key={model.id}
-                        onClick={() => setSelectedModelId(model.id)}
-                        type="button"
-                      >
-                        <p className="text-sm font-semibold text-(--foreground)">{model.id}</p>
-                        <p className="mt-1 text-xs text-(--muted)">
-                          {model.ownedBy} · {model.object}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="px-3 py-10 text-center text-sm text-(--muted)">
-                    Load a host URL to inspect its `/models` response.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-                Import target
-              </p>
-              {selectedModel ? (
-                <>
-                  <p className="mt-2 text-lg font-semibold text-(--foreground)">
-                    {selectedModel.id}
-                  </p>
-                  <p className="mt-2 text-sm text-(--muted)">
-                    This creates a custom model config pointed at the selected OpenAI-compatible host so you can use it in head-to-head runs.
-                  </p>
-                  <div className="mt-4 space-y-2 text-sm text-(--muted)">
-                    <p>Host: {resolvedBaseUrl || "Not loaded yet"}</p>
-                    <p>Owner: {selectedModel.ownedBy}</p>
-                    <p>Image input: {supportsImageInput ? "Enabled" : "Disabled"}</p>
-                  </div>
-                  <button
-                    className="mt-5 rounded-[0.95rem] border border-(--line) bg-(--card) px-4 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={!resolvedBaseUrl || isSaving}
-                    onClick={() => onImport(selectedModel)}
-                    type="button"
-                  >
-                    {isSaving ? "Importing…" : "Import and use this model"}
-                  </button>
-                </>
-              ) : (
-                <p className="mt-2 text-sm text-(--muted)">
-                  Select a model from the host list to import it.
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-function TraceTimeline({
-  events,
-}: {
-  events: ModelTraceEvent[];
-}) {
-  if (!events.length) {
-    return (
-      <div className="rounded-[1rem] border border-dashed border-(--line) px-3 py-4 text-sm text-(--muted)">
-        No agent trace captured yet.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      {events.map((event, index) => (
-        <div
-          className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-3"
-          key={`${event.type}-${event.timestamp}-${index}`}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-(--foreground)">
-              {describeTraceEvent(event)}
-            </p>
-            <span className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">
-              {formatTimeAgo(event.timestamp)}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-(--muted)">
-            {event.type === "tool-call" && event.input != null
-              ? JSON.stringify(event.input)
-              : event.type === "tool-result" && event.durationMs != null
-                ? `Completed in ${formatDuration(event.durationMs)}`
-                : event.type === "tool-error"
-                  ? event.error
-                  : event.type === "repair-complete" && event.htmlLength != null
-                    ? `${formatTokenCount(event.htmlLength)} chars in repaired output`
-                    : event.type === "agent-step" && event.finishReason
-                      ? event.finishReason
-                      : event.type === "done" && event.finishReason
-                        ? event.finishReason
-                        : event.type === "error"
-                          ? event.error
-                          : " "}
-          </p>
-        </div>
-      ))}
-    </div>
   );
 }
 
