@@ -33,6 +33,7 @@ import type {
   AgenticOptions,
   CompareModel,
   GatewayModel,
+  ModelOutputRevision,
   ModelResult,
   ModelTraceEvent,
   OutputDomCssStats,
@@ -118,6 +119,7 @@ type ModelCardWorkspaceState = {
   previewErrors: Record<string, string[]>;
   previewToolErrors: Record<string, string[]>;
   previewOverrides: Record<string, string>;
+  selectedRevisionIds: Record<string, string>;
   visualDiffs: Record<string, VisualDiffState>;
 };
 
@@ -286,6 +288,7 @@ function createEmptyResult(model: CompareModel): ModelResult {
     label: model.label,
     text: "",
     thinking: "",
+    revisions: [],
     status: "idle",
     vote: {
       score: 0,
@@ -314,12 +317,121 @@ function createInitialModelCardWorkspaceState(
     previewErrors: {},
     previewToolErrors: {},
     previewOverrides: {},
+    selectedRevisionIds: {},
     visualDiffs: {},
   };
 }
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createOutputRevision(
+  source: ModelOutputRevision["source"],
+  html: string,
+  timestamp: string,
+  label: string,
+): ModelOutputRevision {
+  return {
+    id: `${source}-${timestamp}-${hashString(`${label}:${html}`)}`,
+    source,
+    html,
+    timestamp,
+    label,
+  };
+}
+
+function appendOutputRevision(
+  revisions: ModelOutputRevision[] | undefined,
+  nextRevision: ModelOutputRevision,
+) {
+  const existing = revisions ?? [];
+  const trimmedHtml = nextRevision.html.trim();
+  if (!trimmedHtml) return existing;
+
+  const previous = existing.at(-1);
+  if (previous?.html.trim() === trimmedHtml) {
+    return existing;
+  }
+
+  return [...existing, nextRevision];
+}
+
+function getFallbackOutputRevisions(result: ModelResult) {
+  const revisions: ModelOutputRevision[] = [];
+  const initialHtml = result.text.trim();
+  const repairedHtml = result.repairedText?.trim() ?? "";
+  const initialTimestamp = result.completedAt ?? result.startedAt ?? new Date().toISOString();
+
+  if (initialHtml) {
+    revisions.push(
+      createOutputRevision("initial", result.text, initialTimestamp, "Initial output"),
+    );
+  }
+
+  if (repairedHtml && repairedHtml !== initialHtml) {
+    revisions.push(
+      createOutputRevision(
+        "repair",
+        result.repairedText ?? "",
+        result.completedAt ?? initialTimestamp,
+        "Repair pass",
+      ),
+    );
+  }
+
+  return revisions;
+}
+
+function getOutputRevisions(
+  result: ModelResult | null | undefined,
+  previewOverride?: string,
+) {
+  if (!result) return [];
+
+  const revisions =
+    result.revisions && result.revisions.length
+      ? result.revisions
+      : getFallbackOutputRevisions(result);
+
+  if (!previewOverride?.trim()) {
+    return revisions;
+  }
+
+  const latest = revisions.at(-1);
+  if (latest?.html.trim() === previewOverride.trim()) {
+    return revisions;
+  }
+
+  return [
+    ...revisions,
+    createOutputRevision(
+      "tool",
+      previewOverride,
+      result.completedAt ?? new Date().toISOString(),
+      "Working draft",
+    ),
+  ];
+}
+
+function getSelectedOutputRevision(
+  result: ModelResult | null | undefined,
+  previewOverride: string | undefined,
+  selectedRevisionId: string | undefined,
+) {
+  const revisions = getOutputRevisions(result, previewOverride);
+  const fallbackIndex = Math.max(0, revisions.length - 1);
+  const selectedIndex = selectedRevisionId
+    ? revisions.findIndex((revision) => revision.id === selectedRevisionId)
+    : fallbackIndex;
+  const resolvedIndex = selectedIndex >= 0 ? selectedIndex : fallbackIndex;
+
+  return {
+    revisions,
+    selectedIndex: resolvedIndex,
+    selectedRevision:
+      revisions.length > 0 ? revisions[resolvedIndex] : null,
+  };
 }
 
 function getRunHref(runId: string, agenticEnabled: boolean) {
@@ -775,6 +887,59 @@ function unwrapHtmlCodeFence(markup: string) {
  * Strip the url() wrapper so the attribute value is a plain URL, regardless
  * of whether the model used single quotes, double quotes, or extra whitespace.
  */
+const PREVIEW_ASSET_PROXY_PATH = "/api/preview-asset";
+
+function toPreviewAssetProxyUrl(rawValue: string, baseUrl?: string) {
+  const trimmed = rawValue.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
+    return rawValue;
+  }
+
+  try {
+    const resolved = new URL(
+      trimmed,
+      baseUrl
+        ?? (typeof document !== "undefined" ? document.baseURI : "http://localhost"),
+    );
+
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      return rawValue;
+    }
+
+    return `${PREVIEW_ASSET_PROXY_PATH}?url=${encodeURIComponent(resolved.toString())}`;
+  } catch {
+    return rawValue;
+  }
+}
+
+function rewritePreviewCssAssetUrls(value: string, baseUrl?: string) {
+  return value
+    .replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (match, quote, assetUrl) => {
+      const proxied = toPreviewAssetProxyUrl(assetUrl, baseUrl);
+      if (proxied === assetUrl) return match;
+      return `url(${quote}${proxied}${quote})`;
+    })
+    .replace(/@import\s+(?:url\(\s*)?(['"])(.*?)\1\s*\)?/gi, (match, quote, assetUrl) => {
+      const proxied = toPreviewAssetProxyUrl(assetUrl, baseUrl);
+      if (proxied === assetUrl) return match;
+      return match.replace(assetUrl, proxied);
+    });
+}
+
+function rewritePreviewSrcSet(value: string, baseUrl?: string) {
+  return value
+    .split(",")
+    .map((entry) => {
+      const trimmed = entry.trim();
+      if (!trimmed) return trimmed;
+
+      const [assetUrl, ...descriptor] = trimmed.split(/\s+/);
+      const proxied = toPreviewAssetProxyUrl(assetUrl, baseUrl);
+      return [proxied, ...descriptor].filter(Boolean).join(" ");
+    })
+    .join(", ");
+}
+
 function sanitizePreviewMarkup(markup: string): string {
   const normalizedAttributes = markup.replace(
     /\b(href|src|action)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
@@ -801,18 +966,76 @@ function sanitizePreviewMarkup(markup: string): string {
     },
   );
 
-  // Cross-origin assets can taint the canvas used for screenshot export.
-  // Add an anonymous crossorigin hint to common fetchable elements when missing.
-  return normalizedAttributes.replace(
-    /<(img|audio|video|link|script)\b(?![^>]*\bcrossorigin\s*=)([^>]*)>/gi,
-    (match, tagName, attrs) => {
-      if (!/\b(?:src|href)\s*=/i.test(attrs)) {
-        return match;
-      }
+  if (typeof DOMParser === "undefined") {
+    return normalizedAttributes;
+  }
 
-      return `<${tagName} crossorigin="anonymous"${attrs}>`;
-    },
-  );
+  const isFullDocument = looksLikeHtmlDocument(normalizedAttributes);
+  const parser = new DOMParser();
+  const documentMarkup = isFullDocument
+    ? normalizedAttributes
+    : `<!DOCTYPE html><html><head></head><body>${normalizedAttributes}</body></html>`;
+  const doc = parser.parseFromString(documentMarkup, "text/html");
+  const baseUrl = typeof document !== "undefined" ? document.baseURI : undefined;
+
+  doc.querySelectorAll("*").forEach((node) => {
+    if (!(node instanceof Element)) return;
+
+    const tagName = node.tagName.toLowerCase();
+    if (node.hasAttribute("style")) {
+      node.setAttribute(
+        "style",
+        rewritePreviewCssAssetUrls(node.getAttribute("style") ?? "", baseUrl),
+      );
+    }
+
+    if (node instanceof HTMLStyleElement) {
+      node.textContent = rewritePreviewCssAssetUrls(node.textContent ?? "", baseUrl);
+    }
+
+    if (node.hasAttribute("srcset")) {
+      node.setAttribute(
+        "srcset",
+        rewritePreviewSrcSet(node.getAttribute("srcset") ?? "", baseUrl),
+      );
+    }
+
+    if (node.hasAttribute("src")) {
+      node.setAttribute(
+        "src",
+        toPreviewAssetProxyUrl(node.getAttribute("src") ?? "", baseUrl),
+      );
+    }
+
+    if (node.hasAttribute("poster")) {
+      node.setAttribute(
+        "poster",
+        toPreviewAssetProxyUrl(node.getAttribute("poster") ?? "", baseUrl),
+      );
+    }
+
+    if (tagName === "link" && node.hasAttribute("href")) {
+      node.setAttribute(
+        "href",
+        toPreviewAssetProxyUrl(node.getAttribute("href") ?? "", baseUrl),
+      );
+    }
+
+    if (
+      (tagName === "img" ||
+        tagName === "audio" ||
+        tagName === "video" ||
+        tagName === "link" ||
+        tagName === "script" ||
+        tagName === "source") &&
+      !node.hasAttribute("crossorigin") &&
+      (node.hasAttribute("src") || node.hasAttribute("href") || node.hasAttribute("srcset"))
+    ) {
+      node.setAttribute("crossorigin", "anonymous");
+    }
+  });
+
+  return isFullDocument ? doc.documentElement.outerHTML : doc.body.innerHTML;
 }
 
 function createPreviewSrcDoc(
@@ -894,20 +1117,36 @@ function createPreviewSrcDoc(
     clone.querySelectorAll("script").forEach((node) => node.remove());
     clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
 
+    const previewBaseUrl = document.baseURI || window.location.href;
+    const previewBaseOrigin = (() => {
+      try {
+        return new URL(previewBaseUrl).origin;
+      } catch {
+        return "";
+      }
+    })();
     const transparentPixel =
       "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
     const isExportSafeUrl = (value) => {
       if (typeof value !== "string") return true;
       const normalized = value.trim().toLowerCase();
-      return (
+      if (
         !normalized ||
         normalized.startsWith("#") ||
         normalized.startsWith("data:") ||
         normalized.startsWith("blob:")
-      );
+      ) {
+        return true;
+      }
+
+      try {
+        return new URL(value, previewBaseUrl).origin === previewBaseOrigin;
+      } catch {
+        return false;
+      }
     };
     const stripUnsafeUrls = (value) =>
-      value.replace(/url\(([^)]+)\)/gi, (match, rawUrl) => {
+      value.replace(/url\\(([^)]+)\\)/gi, (match, rawUrl) => {
         const cleaned = rawUrl.trim().replace(/^['"]|['"]$/g, "");
         return isExportSafeUrl(cleaned) ? match : "none";
       });
@@ -916,7 +1155,7 @@ function createPreviewSrcDoc(
       if (!(node instanceof Element)) return;
 
       const inlineStyle = node.getAttribute("style");
-      if (inlineStyle && /url\(/i.test(inlineStyle)) {
+      if (inlineStyle && /url\\(/i.test(inlineStyle)) {
         const sanitizedStyle = stripUnsafeUrls(inlineStyle);
         if (sanitizedStyle.trim()) {
           node.setAttribute("style", sanitizedStyle);
@@ -1010,12 +1249,25 @@ function createPreviewSrcDoc(
 
     const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
+    const screenshotRenderTimeoutMs = 8000;
 
     try {
       const image = await new Promise((resolve, reject) => {
         const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error("Unable to render preview screenshot."));
+        const timeoutId = window.setTimeout(() => {
+          img.onload = null;
+          img.onerror = null;
+          reject(new Error("Preview screenshot rendering took too long."));
+        }, screenshotRenderTimeoutMs);
+
+        img.onload = () => {
+          window.clearTimeout(timeoutId);
+          resolve(img);
+        };
+        img.onerror = () => {
+          window.clearTimeout(timeoutId);
+          reject(new Error("Unable to render preview screenshot."));
+        };
         img.src = url;
       });
 
@@ -1469,6 +1721,11 @@ function describeTraceEvent(event: ModelTraceEvent) {
     default:
       return "Unknown event";
   }
+}
+
+function formatOutputRevisionMeta(revision: ModelOutputRevision, index: number, total: number) {
+  const step = `Revision ${index + 1} of ${total}`;
+  return `${step} · ${revision.label}`;
 }
 
 function formatStatCount(value?: number) {
@@ -2110,6 +2367,80 @@ function VisualComparisonPanel({
   );
 }
 
+function RevisionNavigator({
+  revisions,
+  selectedIndex,
+  onSelect,
+  compact = false,
+}: {
+  revisions: ModelOutputRevision[];
+  selectedIndex: number;
+  onSelect: (revisionId: string) => void;
+  compact?: boolean;
+}) {
+  if (!revisions.length) {
+    return null;
+  }
+
+  const selectedRevision = revisions[selectedIndex] ?? revisions.at(-1) ?? null;
+  const disablePrevious = selectedIndex <= 0;
+  const disableNext = selectedIndex >= revisions.length - 1;
+
+  return (
+    <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+            HTML revisions
+          </p>
+          {selectedRevision ? (
+            <p className="mt-1 text-sm text-(--foreground)">
+              {formatOutputRevisionMeta(selectedRevision, selectedIndex, revisions.length)}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={disablePrevious}
+            onClick={() => onSelect(revisions[Math.max(0, selectedIndex - 1)].id)}
+            type="button"
+          >
+            Prev
+          </button>
+          <button
+            className="rounded-full border border-(--line) px-3 py-1 text-xs font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={disableNext}
+            onClick={() => onSelect(revisions[Math.min(revisions.length - 1, selectedIndex + 1)].id)}
+            type="button"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+      {!compact ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {revisions.map((revision, index) => (
+            <button
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium transition",
+                index === selectedIndex
+                  ? "border-(--foreground) bg-(--card-active) text-(--foreground)"
+                  : "border-(--line) text-(--muted) hover:bg-(--card-active)",
+              )}
+              key={revision.id}
+              onClick={() => onSelect(revision.id)}
+              type="button"
+            >
+              {index + 1}. {revision.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TraceTimeline({
   events,
 }: {
@@ -2223,6 +2554,9 @@ export function BuildOffClient({
   const [previewOverrides, setPreviewOverrides] = useState<
     Record<string, string>
   >({});
+  const [selectedRevisionIds, setSelectedRevisionIds] = useState<
+    Record<string, string>
+  >({});
   const [visualDiffs, setVisualDiffs] = useState<Record<string, VisualDiffState>>({});
   const [agenticOptions, setAgenticOptions] = useState<AgenticOptions>(() => ({
     ...DEFAULT_AGENTIC_OPTIONS,
@@ -2316,6 +2650,11 @@ export function BuildOffClient({
   const activePreviewVisualDiff = activePreviewId
     ? visualDiffs[activePreviewId]
     : undefined;
+  const activePreviewRevisionState = getSelectedOutputRevision(
+    activePreviewResult,
+    activePreviewModel ? previewOverrides[activePreviewModel.id] : undefined,
+    activePreviewModelId ? selectedRevisionIds[activePreviewModelId] : undefined,
+  );
 
   const handleReferenceImageMouseMove = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -2416,9 +2755,12 @@ export function BuildOffClient({
 
     const model = selectedModels[previewIndex];
     const result = results[previewIndex];
-    const markup = unwrapHtmlCodeFence(
-      previewOverrides[model.id] ?? result?.repairedText ?? result?.text ?? "",
+    const revisionState = getSelectedOutputRevision(
+      result,
+      previewOverrides[model.id],
+      selectedRevisionIds[model.id],
     );
+    const markup = unwrapHtmlCodeFence(revisionState.selectedRevision?.html ?? "");
     const requestKey = getVisualDiffRequestKey(result?.completedAt, markup);
 
     const jobToken = uid();
@@ -2505,7 +2847,7 @@ export function BuildOffClient({
         },
       }));
     }
-  }, [imageDataUrl, previewOverrides, results, selectedModels]);
+  }, [imageDataUrl, previewOverrides, results, selectedModels, selectedRevisionIds]);
 
   useEffect(() => {
     setIsClient(true);
@@ -2536,9 +2878,12 @@ export function BuildOffClient({
 
       const previewId = `${model.id}-${index}`;
       const visualState = visualDiffs[previewId];
-      const markup = unwrapHtmlCodeFence(
-        previewOverrides[model.id] ?? result.repairedText ?? result.text ?? "",
+      const revisionState = getSelectedOutputRevision(
+        result,
+        previewOverrides[model.id],
+        selectedRevisionIds[model.id],
       );
+      const markup = unwrapHtmlCodeFence(revisionState.selectedRevision?.html ?? "");
       const requestKey = getVisualDiffRequestKey(result.completedAt, markup);
       const hasRenderableMarkup = looksLikeHtml(markup);
       const isFinalState = result.status === "done" || result.status === "error";
@@ -2558,6 +2903,7 @@ export function BuildOffClient({
     previewOverrides,
     refreshVisualDiff,
     results,
+    selectedRevisionIds,
     selectedModels,
     visualDiffs,
   ]);
@@ -2674,6 +3020,7 @@ export function BuildOffClient({
       previewErrors,
       previewToolErrors,
       previewOverrides,
+      selectedRevisionIds,
       visualDiffs,
     };
   }
@@ -2686,6 +3033,7 @@ export function BuildOffClient({
     setPreviewErrors(state.previewErrors);
     setPreviewToolErrors(state.previewToolErrors);
     setPreviewOverrides(state.previewOverrides);
+    setSelectedRevisionIds(state.selectedRevisionIds);
     setVisualDiffs(state.visualDiffs);
   }
 
@@ -2714,6 +3062,7 @@ export function BuildOffClient({
       previewErrors: {},
       previewToolErrors: {},
       previewOverrides: {},
+      selectedRevisionIds: {},
       visualDiffs: {},
     };
 
@@ -2808,6 +3157,7 @@ export function BuildOffClient({
       previewErrors: {},
       previewToolErrors: {},
       previewOverrides: {},
+      selectedRevisionIds: {},
       visualDiffs: {},
     };
 
@@ -2914,6 +3264,7 @@ export function BuildOffClient({
       previewErrors: {},
       previewToolErrors: {},
       previewOverrides: {},
+      selectedRevisionIds: {},
       visualDiffs: {},
     };
 
@@ -3295,6 +3646,7 @@ export function BuildOffClient({
             setPreviewErrors({});
             setPreviewToolErrors({});
             setPreviewOverrides({});
+            setSelectedRevisionIds({});
           }
         } else {
           setSelectedModels((current) => syncModelLabels(current, nextCatalog));
@@ -3344,6 +3696,7 @@ export function BuildOffClient({
         previewErrors,
         previewToolErrors,
         previewOverrides,
+        selectedRevisionIds,
         visualDiffs,
       };
       const selectedModelConfigsByMode: Record<ModelCardModeKey, string[]> = {
@@ -3393,6 +3746,7 @@ export function BuildOffClient({
     previewErrors,
     previewToolErrors,
     previewOverrides,
+    selectedRevisionIds,
     visualDiffs,
   ]);
 
@@ -3501,9 +3855,11 @@ export function BuildOffClient({
   }, []);
 
   function getEffectiveMarkupForModelId(modelId: string) {
+    const result = resultsRef.current.find((entry) => entry.modelId === modelId);
     return (
       previewOverridesRef.current[modelId] ??
-      resultsRef.current.find((result) => result.modelId === modelId)?.text ??
+      result?.repairedText ??
+      result?.text ??
       ""
     );
   }
@@ -3839,6 +4195,39 @@ export function BuildOffClient({
         ...current,
         [modelId]: html,
       }));
+      const toolRevision = createOutputRevision(
+        "tool",
+        html,
+        new Date().toISOString(),
+        "Tool edit",
+      );
+      setResults((current) =>
+        current.map((result) =>
+          result.modelId === modelId
+            ? {
+                ...result,
+                revisions: appendOutputRevision(result.revisions, toolRevision),
+              }
+            : result,
+        ),
+      );
+      setSelectedRevisionIds((current) => ({
+        ...current,
+        [modelId]: toolRevision.id,
+      }));
+      if (activeRunId) {
+        updateRun(activeRunId, (existing) => ({
+          ...existing,
+          results: existing.results.map((result) =>
+            result.modelId === modelId
+              ? {
+                  ...result,
+                  revisions: appendOutputRevision(result.revisions, toolRevision),
+                }
+              : result,
+          ),
+        }));
+      }
       await fetch("/api/compare/tool-response", {
         method: "POST",
         headers: {
@@ -4037,6 +4426,7 @@ export function BuildOffClient({
         text: "",
         thinking: "",
         repairedText: undefined,
+        revisions: [],
         startedAt:
           typeof event.startedAt === "string" ? event.startedAt : undefined,
         error: undefined,
@@ -4082,6 +4472,7 @@ export function BuildOffClient({
       return {
         ...result,
         text: "",
+        revisions: [],
         stats: readEventStats(event) ?? result.stats,
       };
     }
@@ -4097,12 +4488,25 @@ export function BuildOffClient({
     }
 
     if (event.type === "repair-complete") {
+      const repairedText =
+        typeof event.repairedText === "string"
+          ? event.repairedText
+          : result.repairedText;
+
       return {
         ...result,
-        repairedText:
-          typeof event.repairedText === "string"
-            ? event.repairedText
-            : result.repairedText,
+        repairedText,
+        revisions: repairedText
+          ? appendOutputRevision(
+              result.revisions,
+              createOutputRevision(
+                "repair",
+                repairedText,
+                readEventTimestamp(event),
+                `Repair ${((result.stats?.repairPassCount ?? 0) + 1).toString()}`,
+              ),
+            )
+          : result.revisions,
         stats: appendTraceEvent(readEventStats(event) ?? result.stats, {
           type: "repair-complete",
           timestamp: readEventTimestamp(event),
@@ -4187,9 +4591,21 @@ export function BuildOffClient({
     }
 
     if (event.type === "done") {
+      const outputText = result.text.trim();
       return {
         ...result,
         status: "done" as const,
+        revisions: outputText
+          ? appendOutputRevision(
+              result.revisions,
+              createOutputRevision(
+                "initial",
+                result.text,
+                readEventTimestamp(event),
+                "Initial output",
+              ),
+            )
+          : result.revisions,
         completedAt:
           typeof event.completedAt === "string" ? event.completedAt : undefined,
         firstTokenAt:
@@ -4233,9 +4649,21 @@ export function BuildOffClient({
     }
 
     if (event.type === "error") {
+      const partialText = result.text.trim();
       return {
         ...result,
         status: "error" as const,
+        revisions: partialText
+          ? appendOutputRevision(
+              result.revisions,
+              createOutputRevision(
+                "initial",
+                result.text,
+                readEventTimestamp(event),
+                "Last partial output",
+              ),
+            )
+          : result.revisions,
         error:
           typeof event.error === "string"
             ? event.error
@@ -4634,6 +5062,7 @@ export function BuildOffClient({
     setPreviewErrors({});
     setPreviewToolErrors({});
     setPreviewOverrides({});
+    setSelectedRevisionIds({});
     setVisualDiffs({});
     setErrorMessage("");
     setIsHistoryOpen(false);
@@ -4725,6 +5154,13 @@ export function BuildOffClient({
               }
               const previewId = getPreviewIdForModelId(modelId);
               setPreviewOverrides((current) => {
+                if (!(modelId in current)) return current;
+
+                const next = { ...current };
+                delete next[modelId];
+                return next;
+              });
+              setSelectedRevisionIds((current) => {
                 if (!(modelId in current)) return current;
 
                 const next = { ...current };
@@ -5651,8 +6087,14 @@ export function BuildOffClient({
           const cardPreviewToolErrors = previewToolErrors[previewId] ?? [];
           const cardVisualDiff = visualDiffs[previewId];
           const repairedMarkup = result?.repairedText ?? result?.text ?? "";
-          const effectivePreviewMarkup = previewOverrides[model.id] ?? repairedMarkup;
-          const displayRawMarkup = repairedMarkup;
+          const revisionState = getSelectedOutputRevision(
+            result,
+            previewOverrides[model.id],
+            selectedRevisionIds[model.id],
+          );
+          const selectedRevisionMarkup = revisionState.selectedRevision?.html ?? "";
+          const effectivePreviewMarkup = selectedRevisionMarkup || repairedMarkup;
+          const displayRawMarkup = selectedRevisionMarkup || repairedMarkup;
           const thinkingOutput = result?.thinking?.trim() ?? "";
           const domCssStatItems = buildDomCssStatItems(result?.domCssStats);
           const traceEvents = readTraceEvents(result?.stats).slice().reverse();
@@ -5836,6 +6278,16 @@ export function BuildOffClient({
                 {displayRawMarkup || previewOverrides[model.id] || thinkingOutput ? (
                   outputMode === "preview" ? (
                     <div className="flex flex-col gap-2 p-3">
+                      <RevisionNavigator
+                        compact
+                        onSelect={(revisionId) =>
+                          setSelectedRevisionIds((current) => ({
+                            ...current,
+                            [model.id]: revisionId,
+                          }))}
+                        revisions={revisionState.revisions}
+                        selectedIndex={revisionState.selectedIndex}
+                      />
                       <div className="grid gap-2 sm:grid-cols-3">
                         <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2">
                           <p className="text-[11px] uppercase tracking-[0.16em] text-(--muted)">Visual score</p>
@@ -5911,7 +6363,7 @@ export function BuildOffClient({
                                 }}
                                 isStreaming={result.status === "streaming"}
                                 markup={displayRawMarkup}
-                                overrideMarkup={previewOverrides[model.id]}
+                                overrideMarkup={displayRawMarkup}
                                 previewId={previewId}
                                 title={`${result.label} preview`}
                               />
@@ -5952,6 +6404,16 @@ export function BuildOffClient({
                   ) : (
                     outputMode === "raw" ? (
                       <div className="flex flex-col gap-2 p-3">
+                        <RevisionNavigator
+                          compact
+                          onSelect={(revisionId) =>
+                            setSelectedRevisionIds((current) => ({
+                              ...current,
+                              [model.id]: revisionId,
+                            }))}
+                          revisions={revisionState.revisions}
+                          selectedIndex={revisionState.selectedIndex}
+                        />
                         <div className="flex items-center justify-between rounded-[1rem] border border-(--line) bg-(--panel-strong) px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-(--muted)">
                           <span>DOM + CSS stats</span>
                           <span>
@@ -6229,6 +6691,17 @@ export function BuildOffClient({
                 <div className="preview-modal__body flex-1">
                   <div className="grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(22rem,0.9fr)]">
                     <div className="flex min-h-0 flex-col gap-3">
+                  <RevisionNavigator
+                    onSelect={(revisionId) => {
+                      if (!activePreviewModel) return;
+                      setSelectedRevisionIds((current) => ({
+                        ...current,
+                        [activePreviewModel.id]: revisionId,
+                      }));
+                    }}
+                    revisions={activePreviewRevisionState.revisions}
+                    selectedIndex={activePreviewRevisionState.selectedIndex}
+                  />
                   {activePreviewErrors.length ? (
                     <div className="rounded-[1rem] border border-[color-mix(in_oklch,var(--danger)_40%,transparent)] bg-[color-mix(in_oklch,var(--danger)_15%,transparent)] px-3 py-2 text-xs text-(--danger)">
                       {activePreviewErrors.map((msg, i) => (
@@ -6247,10 +6720,8 @@ export function BuildOffClient({
                       }}
                       interactive
                       isStreaming={activePreviewResult.status === "streaming"}
-                      markup={
-                        activePreviewResult.repairedText ?? activePreviewResult.text
-                      }
-                      overrideMarkup={previewOverrides[activePreviewModel.id]}
+                      markup={activePreviewRevisionState.selectedRevision?.html ?? ""}
+                      overrideMarkup={activePreviewRevisionState.selectedRevision?.html ?? ""}
                       previewId={activePreviewId}
                       title={`${activePreviewResult.label} interactive preview`}
                       />

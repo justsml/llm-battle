@@ -204,12 +204,21 @@ export type ModelVoteSummary = {
   userVote?: OutputVoteValue;
 };
 
+export type ModelOutputRevision = {
+  id: string;
+  label: string;
+  source: "initial" | "repair" | "tool";
+  html: string;
+  timestamp: string;
+};
+
 export type ModelResult = {
   modelId: string;
   label: string;
   text: string;
   thinking?: string;
   repairedText?: string;
+  revisions?: ModelOutputRevision[];
   status: ModelStatus;
   error?: string;
   startedAt?: string;
