@@ -142,3 +142,21 @@ export function toCompareModel(model: Pick<GatewayModel, "id" | "name">): Compar
     config: getModelConfig(model),
   };
 }
+
+export function buildOpenAICompatibleModelConfig(
+  modelId: string,
+  baseUrl: string,
+  apiKey?: string,
+) {
+  const parsedBaseUrl = new URL(baseUrl);
+
+  return build({
+    host: parsedBaseUrl.host,
+    model: modelId,
+    apiKey: apiKey?.trim() || undefined,
+    params: {
+      protocol: parsedBaseUrl.protocol.replace(/:$/, ""),
+      path: parsedBaseUrl.pathname || "/",
+    },
+  });
+}

@@ -22,6 +22,7 @@ import { estimateModelCost } from "@/lib/gateway-models";
 import {
   DEFAULT_MODELS,
   DEFAULT_PROMPT,
+  buildOpenAICompatibleModelConfig,
   getModelConfig,
   getModelLabel,
   parseModelConfig,
@@ -61,6 +62,12 @@ type PreviewConsoleEntry = {
   level: string;
   message: string;
   timestamp: string;
+};
+
+type RemoteHostModelEntry = {
+  id: string;
+  ownedBy: string;
+  object: string;
 };
 
 type AgenticToolState = {
@@ -1842,6 +1849,7 @@ type ModelPickerProps = {
   selectedModels: CompareModel[];
   recentModelConfigs: string[];
   onSelect: (modelConfig: string) => void;
+  onOpenHostExplorer?: () => void;
   onOpenChange?: (isOpen: boolean) => void;
   variant?: "default" | "header";
 };
@@ -1856,6 +1864,7 @@ function ModelPicker({
   selectedModels,
   recentModelConfigs,
   onSelect,
+  onOpenHostExplorer,
   onOpenChange,
   variant = "default",
 }: ModelPickerProps) {
@@ -2087,6 +2096,20 @@ function ModelPicker({
                 No models matched that filter.
               </div>
             )}
+          </div>
+          <div className="border-t border-(--line) bg-(--panel-strong) p-2">
+            <button
+              className="w-full rounded-[0.95rem] border border-(--line) bg-(--card) px-3 py-2 text-left text-sm font-medium transition hover:bg-(--card-active)"
+              onClick={() => {
+                setQuery("");
+                setIsOpen(false);
+                onOpenChange?.(false);
+                onOpenHostExplorer?.();
+              }}
+              type="button"
+            >
+              Explore host URL
+            </button>
           </div>
         </div>
       ) : null}
@@ -2441,6 +2464,208 @@ function RevisionNavigator({
   );
 }
 
+type HostModelExplorerModalProps = {
+  apiKey: string;
+  error: string;
+  hostUrl: string;
+  isLoading: boolean;
+  isOpen: boolean;
+  isSaving: boolean;
+  models: RemoteHostModelEntry[];
+  onApiKeyChange: (value: string) => void;
+  onClose: () => void;
+  onHostUrlChange: (value: string) => void;
+  onImport: (model: RemoteHostModelEntry) => void;
+  onLoadModels: () => void;
+  onSupportsImageInputChange: (value: boolean) => void;
+  resolvedBaseUrl: string;
+  selectedModelId: string;
+  setSelectedModelId: (value: string) => void;
+  supportsImageInput: boolean;
+};
+
+function HostModelExplorerModal({
+  apiKey,
+  error,
+  hostUrl,
+  isLoading,
+  isOpen,
+  isSaving,
+  models,
+  onApiKeyChange,
+  onClose,
+  onHostUrlChange,
+  onImport,
+  onLoadModels,
+  onSupportsImageInputChange,
+  resolvedBaseUrl,
+  selectedModelId,
+  setSelectedModelId,
+  supportsImageInput,
+}: HostModelExplorerModalProps) {
+  if (!isOpen) return null;
+
+  const selectedModel =
+    models.find((model) => model.id === selectedModelId) ?? models[0] ?? null;
+
+  return createPortal(
+    <div
+      aria-modal="true"
+      className="preview-modal-backdrop"
+      onClick={onClose}
+      role="dialog"
+    >
+      <div
+        className="preview-modal-sheet max-w-4xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="preview-modal__header">
+          <div>
+            <p className="preview-modal__eyebrow">Model explorer</p>
+            <h2 className="preview-modal__title">Add OpenAI-compatible host models</h2>
+          </div>
+          <button
+            className="preview-modal__close"
+            onClick={onClose}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="preview-modal__body space-y-4">
+          <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem_auto]">
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                  Models URL
+                </span>
+                <input
+                  className="rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 outline-none transition focus:border-(--foreground)"
+                  onChange={(event) => onHostUrlChange(event.target.value)}
+                  placeholder="http://192.168.50.173:1234/v1/models"
+                  value={hostUrl}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                  API key
+                </span>
+                <input
+                  className="rounded-[0.9rem] border border-(--line) bg-(--card) px-3 py-2 outline-none transition focus:border-(--foreground)"
+                  onChange={(event) => onApiKeyChange(event.target.value)}
+                  placeholder="Optional"
+                  type="password"
+                  value={apiKey}
+                />
+              </label>
+              <div className="flex items-end">
+                <button
+                  className="rounded-[0.9rem] border border-(--line) bg-(--card) px-4 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isLoading || !hostUrl.trim()}
+                  onClick={onLoadModels}
+                  type="button"
+                >
+                  {isLoading ? "Loading…" : "Load models"}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-sm text-(--foreground)">
+                <input
+                  checked={supportsImageInput}
+                  onChange={(event) => onSupportsImageInputChange(event.target.checked)}
+                  type="checkbox"
+                />
+                Imported model supports image input
+              </label>
+              {resolvedBaseUrl ? (
+                <span className="text-xs text-(--muted)">
+                  Base URL: {resolvedBaseUrl}
+                </span>
+              ) : null}
+            </div>
+
+            {error ? (
+              <p className="mt-3 rounded-[0.9rem] border border-[color-mix(in_oklch,var(--danger)_36%,transparent)] bg-[color-mix(in_oklch,var(--danger)_12%,transparent)] px-3 py-2 text-sm text-(--danger)">
+                {error}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(18rem,0.9fr)]">
+            <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-2">
+              <div className="max-h-[24rem] overflow-auto">
+                {models.length ? (
+                  <div className="space-y-2">
+                    {models.map((model) => (
+                      <button
+                        className={cn(
+                          "w-full rounded-[1rem] border px-3 py-3 text-left transition",
+                          selectedModelId === model.id
+                            ? "border-(--foreground) bg-(--card-active)"
+                            : "border-(--line) bg-(--card) hover:bg-(--card-active)",
+                        )}
+                        key={model.id}
+                        onClick={() => setSelectedModelId(model.id)}
+                        type="button"
+                      >
+                        <p className="text-sm font-semibold text-(--foreground)">{model.id}</p>
+                        <p className="mt-1 text-xs text-(--muted)">
+                          {model.ownedBy} · {model.object}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="px-3 py-10 text-center text-sm text-(--muted)">
+                    Load a host URL to inspect its `/models` response.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-[1rem] border border-(--line) bg-(--panel-strong) p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+                Import target
+              </p>
+              {selectedModel ? (
+                <>
+                  <p className="mt-2 text-lg font-semibold text-(--foreground)">
+                    {selectedModel.id}
+                  </p>
+                  <p className="mt-2 text-sm text-(--muted)">
+                    This creates a custom model config pointed at the selected OpenAI-compatible host so you can use it in head-to-head runs.
+                  </p>
+                  <div className="mt-4 space-y-2 text-sm text-(--muted)">
+                    <p>Host: {resolvedBaseUrl || "Not loaded yet"}</p>
+                    <p>Owner: {selectedModel.ownedBy}</p>
+                    <p>Image input: {supportsImageInput ? "Enabled" : "Disabled"}</p>
+                  </div>
+                  <button
+                    className="mt-5 rounded-[0.95rem] border border-(--line) bg-(--card) px-4 py-2 text-sm font-medium transition hover:bg-(--card-active) disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!resolvedBaseUrl || isSaving}
+                    onClick={() => onImport(selectedModel)}
+                    type="button"
+                  >
+                    {isSaving ? "Importing…" : "Import and use this model"}
+                  </button>
+                </>
+              ) : (
+                <p className="mt-2 text-sm text-(--muted)">
+                  Select a model from the host list to import it.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function TraceTimeline({
   events,
 }: {
@@ -2522,6 +2747,17 @@ export function BuildOffClient({
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSiteMenuOpen, setIsSiteMenuOpen] = useState(false);
   const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
+  const [isHostModelExplorerOpen, setIsHostModelExplorerOpen] = useState(false);
+  const [hostModelTargetIndex, setHostModelTargetIndex] = useState<number | null>(null);
+  const [hostModelUrl, setHostModelUrl] = useState("http://192.168.50.173:1234/v1/models");
+  const [hostModelApiKey, setHostModelApiKey] = useState("");
+  const [hostModelEntries, setHostModelEntries] = useState<RemoteHostModelEntry[]>([]);
+  const [hostModelError, setHostModelError] = useState("");
+  const [hostModelLoading, setHostModelLoading] = useState(false);
+  const [hostModelSaving, setHostModelSaving] = useState(false);
+  const [hostModelResolvedBaseUrl, setHostModelResolvedBaseUrl] = useState("");
+  const [hostModelSelectedId, setHostModelSelectedId] = useState("");
+  const [hostModelSupportsImageInput, setHostModelSupportsImageInput] = useState(true);
   const [cardSize, setCardSize] = useState<CardSize>("m");
   const [freshModelIds, setFreshModelIds] = useState<string[]>([]);
   const [recentModelConfigs, setRecentModelConfigs] = useState<string[]>([]);
@@ -4716,7 +4952,11 @@ export function BuildOffClient({
     setErrorMessage("");
   }
 
-  function handleModelChange(index: number, nextModelConfig: string) {
+  function applyCatalogModelSelection(
+    index: number,
+    nextModelConfig: string,
+    catalogSnapshot: GatewayModel[],
+  ) {
     const currentModelConfig = getModelConfig(selectedModels[index]);
     const selectedConfigsExcludingCurrent = selectedModels
       .filter((_, currentIndex) => currentIndex !== index)
@@ -4726,7 +4966,7 @@ export function BuildOffClient({
 
     if (selectedConfigsExcludingCurrent.includes(nextModelConfig)) {
       const fallbackModel = getPreferredAvailableModels(
-        catalog,
+        catalogSnapshot,
         selectedConfigsExcludingCurrent,
         1,
         recentModelConfigs.filter(
@@ -4745,10 +4985,10 @@ export function BuildOffClient({
       }
     }
 
-    const nextModel = catalog.find((model) => model.config === resolvedModelConfig);
+    const nextModel = catalogSnapshot.find((model) => model.config === resolvedModelConfig);
     if (
       !nextModel
-      || !getSelectableCatalogModels(catalog, agenticOptions.enabled).some(
+      || !getSelectableCatalogModels(catalogSnapshot, agenticOptions.enabled).some(
         (model) => model.config === nextModel.config,
       )
     ) {
@@ -4777,6 +5017,10 @@ export function BuildOffClient({
       ),
     );
     setErrorMessage("");
+  }
+
+  function handleModelChange(index: number, nextModelConfig: string) {
+    applyCatalogModelSelection(index, nextModelConfig, catalog);
   }
 
   function handleTargetPanelCount(nextCount: number) {
@@ -5303,6 +5547,121 @@ export function BuildOffClient({
   function handleDragEnd() {
     setDragSourceIndex(null);
     setDragOverIndex(null);
+  }
+
+  function openHostModelExplorer(index: number) {
+    setHostModelTargetIndex(index);
+    setHostModelError("");
+    setHostModelSelectedId("");
+    setIsHostModelExplorerOpen(true);
+  }
+
+  function closeHostModelExplorer() {
+    if (hostModelLoading || hostModelSaving) return;
+    setIsHostModelExplorerOpen(false);
+    setHostModelError("");
+  }
+
+  async function loadHostModels() {
+    setHostModelLoading(true);
+    setHostModelError("");
+
+    try {
+      const response = await fetch("/api/models/explore", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: hostModelUrl,
+          apiKey: hostModelApiKey,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        models?: RemoteHostModelEntry[];
+        resolvedBaseUrl?: string;
+      } | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error ?? "Unable to load models from that host.");
+      }
+
+      const nextModels = payload?.models ?? [];
+      setHostModelEntries(nextModels);
+      setHostModelResolvedBaseUrl(payload?.resolvedBaseUrl ?? "");
+      setHostModelSelectedId(nextModels[0]?.id ?? "");
+    } catch (error) {
+      setHostModelEntries([]);
+      setHostModelResolvedBaseUrl("");
+      setHostModelSelectedId("");
+      setHostModelError(
+        error instanceof Error ? error.message : "Unable to load models from that host.",
+      );
+    } finally {
+      setHostModelLoading(false);
+    }
+  }
+
+  async function importHostModel(model: RemoteHostModelEntry) {
+    if (hostModelTargetIndex == null || !hostModelResolvedBaseUrl) return;
+
+    const nextConfig = buildOpenAICompatibleModelConfig(
+      model.id,
+      hostModelResolvedBaseUrl,
+      hostModelApiKey.trim() || undefined,
+    );
+    const existingMatch = catalog.find((entry) => entry.config === nextConfig);
+
+    if (existingMatch) {
+      handleModelChange(hostModelTargetIndex, existingMatch.config);
+      setIsHostModelExplorerOpen(false);
+      return;
+    }
+
+    setHostModelSaving(true);
+    setHostModelError("");
+
+    try {
+      const response = await fetch("/api/models", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: model.id,
+          llmString: nextConfig,
+          supportsImageInput: hostModelSupportsImageInput,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        model?: GatewayModel;
+      } | null;
+
+      if (!response.ok || !payload?.model) {
+        throw new Error(payload?.error ?? "Unable to import that model.");
+      }
+
+      const updatedCatalog = catalog.some(
+        (entry) => entry.config === payload.model?.config,
+      )
+        ? catalog
+        : [payload.model, ...catalog];
+      setCatalog(updatedCatalog);
+      applyCatalogModelSelection(
+        hostModelTargetIndex,
+        payload.model.config,
+        updatedCatalog,
+      );
+      setIsHostModelExplorerOpen(false);
+    } catch (error) {
+      setHostModelError(
+        error instanceof Error ? error.message : "Unable to import that model.",
+      );
+    } finally {
+      setHostModelSaving(false);
+    }
   }
 
   function handleNewRun() {
@@ -6167,6 +6526,7 @@ export function BuildOffClient({
                         isOpen ? index : current === index ? null : current,
                       )
                     }
+                    onOpenHostExplorer={() => openHostModelExplorer(index)}
                     onSelect={(modelId) => handleModelChange(index, modelId)}
                     onSortModeChange={setModelSortMode}
                     recentModelConfigs={recentModelConfigs}
@@ -6659,6 +7019,30 @@ export function BuildOffClient({
           </button>
         ) : null}
       </div>
+
+      {isClient ? (
+        <HostModelExplorerModal
+          apiKey={hostModelApiKey}
+          error={hostModelError}
+          hostUrl={hostModelUrl}
+          isLoading={hostModelLoading}
+          isOpen={isHostModelExplorerOpen}
+          isSaving={hostModelSaving}
+          models={hostModelEntries}
+          onApiKeyChange={setHostModelApiKey}
+          onClose={closeHostModelExplorer}
+          onHostUrlChange={setHostModelUrl}
+          onImport={importHostModel}
+          onLoadModels={() => {
+            void loadHostModels();
+          }}
+          onSupportsImageInputChange={setHostModelSupportsImageInput}
+          resolvedBaseUrl={hostModelResolvedBaseUrl}
+          selectedModelId={hostModelSelectedId}
+          setSelectedModelId={setHostModelSelectedId}
+          supportsImageInput={hostModelSupportsImageInput}
+        />
+      ) : null}
 
       {isClient && activePreviewResult && activePreviewModel && activePreviewId
         ? createPortal(
