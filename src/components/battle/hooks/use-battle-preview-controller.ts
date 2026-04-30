@@ -10,7 +10,10 @@ import {
 } from "react";
 
 import { looksLikeHtml, unwrapHtmlCodeFence } from "@/components/battle/lib/preview";
-import type { VisualDiffState } from "@/components/battle/lib/view-shared";
+import type {
+  PreviewScreenshot,
+  VisualDiffState,
+} from "@/components/battle/lib/view-shared";
 import type {
   CompareModel,
   ModelResult,
@@ -106,6 +109,10 @@ export function useBattlePreviewController({
       }
     >
   >({});
+  const previewReadyRef = useRef<Record<string, boolean>>({});
+  const previewReadyResolvers = useRef<
+    Record<string, Array<{ resolve: () => void; reject: (error: Error) => void }>>
+  >({});
   const visualDiffJobTokensRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -124,35 +131,121 @@ export function useBattlePreviewController({
     previewOverridesRef.current = previewOverrides;
   }, [previewOverrides]);
 
-  const sendPreviewCommand = useCallback((previewId: string, action: string) => {
-    const frame = previewFrameRefs.current[previewId];
-    const target = frame?.contentWindow;
-    if (!target) {
-      return Promise.reject(new Error("Preview frame is not ready yet."));
+  const requestServerScreenshot = useCallback(async (markup: string) => {
+    const response = await fetch("/api/preview-screenshot", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        markup,
+      }),
+    });
+
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          dataUrl?: unknown;
+          width?: unknown;
+          height?: unknown;
+          capturedAt?: unknown;
+          error?: unknown;
+        }
+      | null;
+
+    if (!response.ok) {
+      throw new Error(
+        typeof payload?.error === "string" && payload.error.trim()
+          ? payload.error
+          : "Preview screenshot capture failed.",
+      );
     }
 
-    return new Promise<unknown>((resolve, reject) => {
-      const commandId = uid();
-      previewCommandResolvers.current[commandId] = { resolve, reject };
+    if (typeof payload?.dataUrl !== "string" || !payload.dataUrl) {
+      throw new Error("Preview screenshot capture returned an invalid payload.");
+    }
 
-      target.postMessage(
-        {
-          source: "battle-preview-parent",
-          previewId,
-          commandId,
-          action,
+    return {
+      dataUrl: payload.dataUrl,
+      width: typeof payload.width === "number" ? payload.width : undefined,
+      height: typeof payload.height === "number" ? payload.height : undefined,
+      capturedAt:
+        typeof payload.capturedAt === "string"
+          ? payload.capturedAt
+          : new Date().toISOString(),
+    } satisfies PreviewScreenshot;
+  }, []);
+
+  const waitForPreviewReady = useCallback((previewId: string) => {
+    if (previewReadyRef.current[previewId]) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve: () => {
+          window.clearTimeout(timeoutId);
+          resolve();
         },
-        "*",
-      );
+        reject: (error: Error) => {
+          window.clearTimeout(timeoutId);
+          reject(error);
+        },
+      };
 
-      window.setTimeout(() => {
-        const pending = previewCommandResolvers.current[commandId];
-        if (!pending) return;
-        delete previewCommandResolvers.current[commandId];
-        pending.reject(new Error("Preview command timed out."));
-      }, 20_000);
+      const timeoutId = window.setTimeout(() => {
+        const pending = previewReadyResolvers.current[previewId];
+        if (pending) {
+          previewReadyResolvers.current[previewId] = pending.filter(
+            (entry) => entry !== waiter,
+          );
+          if (!previewReadyResolvers.current[previewId].length) {
+            delete previewReadyResolvers.current[previewId];
+          }
+        }
+        waiter.reject(new Error("Preview frame is not ready yet."));
+      }, 10_000);
+
+      previewReadyResolvers.current[previewId] = [
+        ...(previewReadyResolvers.current[previewId] ?? []),
+        waiter,
+      ];
     });
   }, []);
+
+  const sendPreviewCommand = useCallback(
+    async (previewId: string, action: string) => {
+      await waitForPreviewReady(previewId);
+
+      const frame = previewFrameRefs.current[previewId];
+      const target = frame?.contentWindow;
+      if (!target) {
+        throw new Error("Preview frame is not ready yet.");
+      }
+
+      return new Promise<unknown>((resolve, reject) => {
+        const commandId = uid();
+        previewCommandResolvers.current[commandId] = { resolve, reject };
+
+        target.postMessage(
+          {
+            source: "battle-preview-parent",
+            previewId,
+            commandId,
+            action,
+          },
+          "*",
+        );
+
+        window.setTimeout(() => {
+          const pending = previewCommandResolvers.current[commandId];
+          if (!pending) return;
+          delete previewCommandResolvers.current[commandId];
+          pending.reject(new Error("Preview command timed out."));
+        }, 20_000);
+      });
+    },
+    [waitForPreviewReady],
+  );
 
   const refreshVisualDiff = useCallback(
     async (previewId: string) => {
@@ -188,33 +281,7 @@ export function useBattlePreviewController({
       }));
 
       try {
-        const payload = await sendPreviewCommand(previewId, "get_screenshot");
-        const screenshot =
-          typeof payload === "object" &&
-          payload &&
-          typeof (payload as { dataUrl?: unknown }).dataUrl === "string"
-            ? {
-                dataUrl: (payload as { dataUrl: string }).dataUrl,
-                width:
-                  typeof (payload as { width?: unknown }).width === "number"
-                    ? (payload as { width: number }).width
-                    : undefined,
-                height:
-                  typeof (payload as { height?: unknown }).height === "number"
-                    ? (payload as { height: number }).height
-                    : undefined,
-                capturedAt:
-                  typeof (payload as { capturedAt?: unknown }).capturedAt ===
-                  "string"
-                    ? (payload as { capturedAt: string }).capturedAt
-                    : new Date().toISOString(),
-              }
-            : null;
-
-        if (!screenshot) {
-          throw new Error("Preview did not return a screenshot.");
-        }
-
+        const screenshot = await requestServerScreenshot(markup);
         const visualState = await buildVisualDiff(imageDataUrl, screenshot);
         if (visualDiffJobTokensRef.current[previewId] !== jobToken) return;
 
@@ -266,10 +333,10 @@ export function useBattlePreviewController({
     [
       imageDataUrl,
       previewOverrides,
+      requestServerScreenshot,
       results,
       selectedModels,
       selectedRevisionIds,
-      sendPreviewCommand,
       setResults,
       setVisualDiffs,
     ],
@@ -451,6 +518,14 @@ export function useBattlePreviewController({
         return;
       }
 
+      if (data.kind === "ready") {
+        previewReadyRef.current[data.previewId] = true;
+        const pending = previewReadyResolvers.current[data.previewId] ?? [];
+        delete previewReadyResolvers.current[data.previewId];
+        pending.forEach(({ resolve }) => resolve());
+        return;
+      }
+
       if (
         data.kind === "error" &&
         typeof data.message === "string" &&
@@ -616,6 +691,22 @@ export function useBattlePreviewController({
         return;
       }
 
+      if (event.toolName === "get_screenshot") {
+        await fetch("/api/compare/tool-response", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            toolCallId: event.toolCallId,
+            output: await requestServerScreenshot(
+              getEffectiveMarkupForModelId(event.modelId),
+            ),
+          }),
+        });
+        return;
+      }
+
       if (event.toolName === "set_html") {
         const modelId = event.modelId;
         const input =
@@ -643,6 +734,10 @@ export function useBattlePreviewController({
           ...current,
           [modelId]: html,
         }));
+        previewOverridesRef.current = {
+          ...previewOverridesRef.current,
+          [modelId]: html,
+        };
         const toolRevision = createOutputRevision(
           "tool",
           html,
@@ -745,6 +840,7 @@ export function useBattlePreviewController({
       activeRunId,
       getEffectiveMarkupForModelId,
       getPreviewIdForModelId,
+      requestServerScreenshot,
       sendPreviewCommand,
       setPreviewOverrides,
       setResults,

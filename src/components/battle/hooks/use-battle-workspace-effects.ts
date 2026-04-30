@@ -6,7 +6,7 @@ import type {
   RefObject,
   SetStateAction,
 } from "react";
-import { useEffect, useEffectEvent } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 
 import {
   type AgenticCardState,
@@ -192,6 +192,7 @@ export function useBattleWorkspaceEffects({
   startBlankWorkspace,
   visualDiffs,
 }: UseBattleWorkspaceEffectsArgs) {
+  const autoLoadedRunsSessionUserIdRef = useRef<string | null>(null);
   const loadRunsForCurrentSession = useEffectEvent(
     (options?: { hydrateLatest?: boolean }) => {
       void loadRuns(options);
@@ -313,7 +314,8 @@ export function useBattleWorkspaceEffects({
     if (isSessionPending) return;
 
     if (!sessionUserId) {
-      runsSetter([]);
+      autoLoadedRunsSessionUserIdRef.current = null;
+      runsSetter((current) => (current.length === 0 ? current : []));
       runsErrorSetter("");
       setIsLoadingRuns(false);
       setIsInitialRouteRunPending(false);
@@ -321,8 +323,13 @@ export function useBattleWorkspaceEffects({
       return;
     }
 
+    if (autoLoadedRunsSessionUserIdRef.current === sessionUserId) {
+      return;
+    }
+
+    autoLoadedRunsSessionUserIdRef.current = sessionUserId;
     loadRunsForCurrentSession({ hydrateLatest: true });
-  }, [isSessionPending, loadRunsForCurrentSession, routeRunHydratedRef, runsErrorSetter, runsSetter, sessionUserId, setIsInitialRouteRunPending, setIsLoadingRuns]);
+  }, [isSessionPending, routeRunHydratedRef, runsErrorSetter, runsSetter, sessionUserId, setIsInitialRouteRunPending, setIsLoadingRuns]);
 
   useEffect(() => {
     if (isSessionPending || !sessionUserId) return;
@@ -335,7 +342,7 @@ export function useBattleWorkspaceEffects({
 
     if (routeRunHydratedRef.current === initialRunId) return;
     hydrateRouteRunForCurrentSession(initialRunId);
-  }, [hydrateRouteRunForCurrentSession, initialRunId, isSessionPending, routeRunHydratedRef, sessionUserId, setIsInitialRouteRunPending]);
+  }, [initialRunId, isSessionPending, routeRunHydratedRef, sessionUserId, setIsInitialRouteRunPending]);
 
   useEffect(() => {
     if (!isSiteMenuOpen) return;
@@ -398,7 +405,7 @@ export function useBattleWorkspaceEffects({
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [handleHistoryPop]);
+  }, []);
 
   useEffect(() => {
     if (!allowLocalDevAutoAuth) return;
@@ -407,13 +414,7 @@ export function useBattleWorkspaceEffects({
 
     attemptedLocalDevSignInRef.current = true;
     bootstrapLocalDevSession();
-  }, [
-    allowLocalDevAutoAuth,
-    attemptedLocalDevSignInRef,
-    bootstrapLocalDevSession,
-    isSessionPending,
-    signedInUser,
-  ]);
+  }, [allowLocalDevAutoAuth, attemptedLocalDevSignInRef, isSessionPending, signedInUser]);
 
   useEffect(() => {
     void (async () => {

@@ -201,6 +201,19 @@ export function createPreviewSrcDoc(
     } catch {}
   };
 
+  const signalReady = () => {
+    try {
+      window.parent.postMessage(
+        {
+          source: "battle-preview",
+          previewId,
+          kind: "ready",
+        },
+        "*",
+      );
+    } catch {}
+  };
+
   const sendCommandResult = (commandId, action, payload, error) => {
     try {
       window.parent.postMessage(
@@ -264,6 +277,22 @@ export function createPreviewSrcDoc(
     })();
     const transparentPixel =
       "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    const blobToDataUrl = (blob) =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+            return;
+          }
+
+          reject(new Error("Unable to encode asset as a data URL."));
+        };
+        reader.onerror = () => {
+          reject(reader.error || new Error("Unable to read asset data."));
+        };
+        reader.readAsDataURL(blob);
+      });
     const isExportSafeUrl = (value) => {
       if (typeof value !== "string") return true;
       const normalized = value.trim().toLowerCase();
@@ -281,6 +310,81 @@ export function createPreviewSrcDoc(
       } catch {
         return false;
       }
+    };
+    const fetchAsDataUrl = async (value, fallback = "") => {
+      if (!isExportSafeUrl(value)) {
+        return fallback;
+      }
+
+      try {
+        const response = await fetch(new URL(value, previewBaseUrl).toString(), {
+          credentials: "same-origin",
+        });
+        if (!response.ok) {
+          return fallback;
+        }
+
+        return await blobToDataUrl(await response.blob());
+      } catch {
+        return fallback;
+      }
+    };
+    const rewriteCssUrls = async (cssText, cssBaseUrl) => {
+      let rewrittenCss = cssText;
+      const importMatches = Array.from(
+        rewrittenCss.matchAll(
+          /@import\s+(?:url\(\s*)?(['"]?)(.*?)\\1\s*\)?\s*;?/gi,
+        ),
+      );
+
+      for (const match of importMatches) {
+        const rawAssetUrl = match[2]?.trim();
+        if (!rawAssetUrl) {
+          rewrittenCss = rewrittenCss.replace(match[0], "");
+          continue;
+        }
+
+        let replacement = "";
+        if (isExportSafeUrl(rawAssetUrl)) {
+          try {
+            const importUrl = new URL(rawAssetUrl, cssBaseUrl).toString();
+            const response = await fetch(importUrl, { credentials: "same-origin" });
+            if (response.ok) {
+              replacement = await rewriteCssUrls(await response.text(), importUrl);
+            }
+          } catch {}
+        }
+
+        rewrittenCss = rewrittenCss.replace(match[0], replacement);
+      }
+
+      const urlMatches = Array.from(
+        rewrittenCss.matchAll(/url\(\s*(['"]?)(.*?)\\1\s*\)/gi),
+      );
+
+      for (const match of urlMatches) {
+        const rawAssetUrl = match[2]?.trim();
+        if (!rawAssetUrl) continue;
+
+        if (
+          rawAssetUrl.startsWith("#") ||
+          rawAssetUrl.startsWith("data:") ||
+          rawAssetUrl.startsWith("blob:")
+        ) {
+          continue;
+        }
+
+        const dataUrl = await fetchAsDataUrl(
+          new URL(rawAssetUrl, cssBaseUrl).toString(),
+          "",
+        );
+        rewrittenCss = rewrittenCss.replace(
+          match[0],
+          dataUrl ? \`url("\${dataUrl}")\` : "none",
+        );
+      }
+
+      return rewrittenCss;
     };
     const stripUnsafeUrls = (value) =>
       value.replace(/url\\(([^)]+)\\)/gi, (match, rawUrl) => {
@@ -356,6 +460,92 @@ export function createPreviewSrcDoc(
         }
       });
     });
+
+    const cloneElements = Array.from(clone.querySelectorAll("*"));
+    for (const node of cloneElements) {
+      if (!(node instanceof Element)) continue;
+
+      if (node instanceof HTMLImageElement) {
+        const assetUrl = node.currentSrc || node.getAttribute("src") || "";
+        const dataUrl = await fetchAsDataUrl(assetUrl, transparentPixel);
+        node.setAttribute("src", dataUrl || transparentPixel);
+        node.removeAttribute("srcset");
+        node.removeAttribute("crossorigin");
+        continue;
+      }
+
+      if (node instanceof HTMLVideoElement) {
+        const poster = node.getAttribute("poster") || "";
+        if (poster) {
+          const dataUrl = await fetchAsDataUrl(poster, "");
+          if (dataUrl) {
+            node.setAttribute("poster", dataUrl);
+          } else {
+            node.removeAttribute("poster");
+          }
+        }
+        node.removeAttribute("src");
+        node.removeAttribute("srcset");
+        continue;
+      }
+
+      if (node instanceof HTMLSourceElement) {
+        node.remove();
+        continue;
+      }
+
+      if (node instanceof HTMLLinkElement) {
+        const rel = (node.getAttribute("rel") || "").toLowerCase();
+        if (rel.includes("stylesheet")) {
+          const href = node.getAttribute("href") || "";
+          let cssText = "";
+          if (href) {
+            try {
+              const stylesheetUrl = new URL(href, previewBaseUrl).toString();
+              const response = await fetch(stylesheetUrl, {
+                credentials: "same-origin",
+              });
+              if (response.ok) {
+                cssText = await rewriteCssUrls(await response.text(), stylesheetUrl);
+              }
+            } catch {}
+          }
+
+          if (cssText) {
+            const styleNode = document.createElement("style");
+            styleNode.textContent = cssText;
+            node.replaceWith(styleNode);
+          } else {
+            node.remove();
+          }
+          continue;
+        }
+
+        node.remove();
+        continue;
+      }
+
+      if (node instanceof HTMLStyleElement) {
+        node.textContent = await rewriteCssUrls(
+          node.textContent || "",
+          previewBaseUrl,
+        );
+        continue;
+      }
+
+      const inlineStyle = node.getAttribute("style");
+      if (inlineStyle && /url\\(/i.test(inlineStyle)) {
+        const rewrittenStyle = await rewriteCssUrls(
+          inlineStyle,
+          previewBaseUrl,
+        );
+        if (rewrittenStyle.trim()) {
+          node.setAttribute("style", rewrittenStyle);
+        } else {
+          node.removeAttribute("style");
+        }
+      }
+    }
 
     const width = Math.max(
       320,
@@ -470,6 +660,7 @@ export function createPreviewSrcDoc(
     body.style.minHeight = \`\${Math.ceil(window.innerHeight / scale)}px\`;
   };
 
+  signalReady();
   send("clear", "");
 
   if (${fitToViewport ? "true" : "false"}) {

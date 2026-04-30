@@ -1,4 +1,4 @@
-import { neon } from "@neondatabase/serverless";
+import { Pool, type QueryResultRow } from "pg";
 
 import type {
   AgenticOptions,
@@ -8,10 +8,60 @@ import type {
   OutputVoteValue,
 } from "@/lib/types";
 
-function getClient() {
+type GlobalDbState = typeof globalThis & {
+  __appDbPool?: Pool;
+};
+
+const globalDbState = globalThis as GlobalDbState;
+
+type SqlQueryValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly SqlQueryValue[];
+
+type SqlTag = <TRow extends QueryResultRow = QueryResultRow>(
+  strings: TemplateStringsArray,
+  ...values: SqlQueryValue[]
+) => Promise<TRow[]>;
+
+function getPool() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not configured.");
-  return neon(url);
+
+  if (globalDbState.__appDbPool) {
+    return globalDbState.__appDbPool;
+  }
+
+  const pool = new Pool({
+    connectionString: url,
+  });
+
+  globalDbState.__appDbPool = pool;
+  return pool;
+}
+
+function getClient(): SqlTag {
+  const pool = getPool();
+
+  return async <TRow extends QueryResultRow = QueryResultRow>(
+    strings: TemplateStringsArray,
+    ...values: SqlQueryValue[]
+  ) => {
+    let text = "";
+
+    for (const [index, chunk] of strings.entries()) {
+      text += chunk;
+      if (index < values.length) {
+        text += `$${index + 1}`;
+      }
+    }
+
+    const result = await pool.query<TRow>(text, values);
+    return result.rows;
+  };
 }
 
 export async function ensureSchema() {

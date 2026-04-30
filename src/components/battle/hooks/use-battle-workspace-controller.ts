@@ -540,7 +540,7 @@ export function useBattleWorkspaceController({
   }
   async function loadRuns(options?: { hydrateLatest?: boolean }) {
     if (!signedInUser) {
-      setRuns([]);
+      setRuns((current) => (current.length === 0 ? current : []));
       setRunsError("");
       return;
     }
@@ -787,7 +787,7 @@ export function useBattleWorkspaceController({
     attemptedLocalDevSignInRef.current = false;
     try {
       await authClient.signOut();
-      setRuns([]);
+      setRuns((current) => (current.length === 0 ? current : []));
       setIsHistoryOpen(false);
     } catch (error) {
       setAuthError(
